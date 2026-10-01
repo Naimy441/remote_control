@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local remote-control secrets and the compiled Mac helper
+/agent/.token
+/agent/link.txt
+/agent/bin/
