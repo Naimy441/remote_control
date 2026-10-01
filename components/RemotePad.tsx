@@ -54,7 +54,7 @@ export default function RemotePad() {
     hintRef.current = hint;
   }, [dragLock, hint, mods, scrollMode, scrollSens, sens]);
 
-  const { status, trusted, rtt, error, send, desk, setDesk } = useAgent({
+  const { status, trusted, rtt, battery, error, send, desk, setDesk } = useAgent({
     url: session?.url ?? "",
     token: session?.token ?? "",
     active: session !== null,
@@ -443,11 +443,23 @@ export default function RemotePad() {
           <span>{labelFor(status)}</span>
           {connected && rtt !== null ? <span className={rtt > 60 ? "rtt slow" : "rtt"}>{rtt} ms</span> : null}
         </div>
-        {session ? (
-          <button type="button" className="text-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen}>
-            {settingsOpen ? "Close" : "Settings"}
-          </button>
-        ) : null}
+        <div className="top-side">
+          {connected && battery ? (
+            <span
+              className="battery"
+              data-charging={battery.charging ? "true" : "false"}
+              data-low={!battery.charging && battery.percent <= 20 ? "true" : "false"}
+              aria-label={`Mac battery ${battery.percent} percent${battery.charging ? ", charging" : ""}`}
+            >
+              {battery.percent}%
+            </span>
+          ) : null}
+          {session ? (
+            <button type="button" className="text-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen}>
+              {settingsOpen ? "Close" : "Settings"}
+            </button>
+          ) : null}
+        </div>
       </header>
 
       {connected && trusted === false ? (

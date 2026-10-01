@@ -102,6 +102,22 @@ button:focus-visible, input:focus-visible {
 .rtt { color: var(--muted); font-variant-numeric: tabular-nums; }
 .rtt.slow { color: var(--accent); }
 
+.top-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.battery {
+  font-variant-numeric: tabular-nums;
+  font-weight: 560;
+  font-size: 15px;
+}
+
+.battery[data-charging="true"] { color: var(--ok); }
+.battery[data-low="true"] { color: var(--danger); }
+
 .text-button {
   min-height: 36px;
   padding: 0 12px;

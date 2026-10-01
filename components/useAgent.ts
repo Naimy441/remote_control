@@ -10,6 +10,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [trusted, setTrusted] = useState<boolean | null>(null);
   const [rtt, setRtt] = useState<number | null>(null);
+  const [battery, setBattery] = useState<{ percent: number; charging: boolean } | null>(null);
   const [error, setError] = useState("");
   const [desk, setDesk] = useState<DeskSnapshot | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -60,6 +61,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     setStatus(activeKey ? "connecting" : "idle");
     setTrusted(null);
     setRtt(null);
+    setBattery(null);
     setError("");
   }
 
@@ -107,6 +109,9 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           type?: string;
           trusted?: boolean;
           id?: number;
+          percent?: number | null;
+          charging?: boolean;
+          battery?: { percent?: number; charging?: boolean } | null;
           front?: string;
           browser?: DeskSnapshot["browser"];
           apps?: DeskApp[];
@@ -138,11 +143,22 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           });
           return;
         }
+        if (message.type === "battery") {
+          if (typeof message.percent === "number") {
+            setBattery({ percent: message.percent, charging: Boolean(message.charging) });
+          } else {
+            setBattery(null);
+          }
+          return;
+        }
         if (message.type === "hello") {
           attempt = 0;
           openRef.current = true;
           setStatus("open");
           setTrusted(Boolean(message.trusted));
+          if (message.battery && typeof message.battery.percent === "number") {
+            setBattery({ percent: message.battery.percent, charging: Boolean(message.battery.charging) });
+          }
           setError("");
           clearPing();
           pingTimer = window.setInterval(() => {
@@ -197,5 +213,5 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     };
   }, [active, generation, token, url]);
 
-  return { status, trusted, rtt, error, send, desk, setDesk };
+  return { status, trusted, rtt, battery, error, send, desk, setDesk };
 }

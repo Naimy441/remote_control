@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -127,10 +127,39 @@ let deskBusy = false;
 let deskQueued = false;
 let deskTimer = null;
 let latestDesk = null;
+let battery = null;
+let batteryTimer = null;
 
 function broadcast(payload) {
   const data = JSON.stringify(payload);
   if (active && active.readyState === 1) active.send(data);
+}
+
+function helloPayload() {
+  return { type: "hello", trusted, battery };
+}
+
+function parseBattery(text) {
+  const match = String(text).match(/(\d+)%;\s*([^;\n]+)/);
+  if (!match) return null;
+  const percent = Number(match[1]);
+  if (!Number.isInteger(percent) || percent < 0 || percent > 100) return null;
+  const state = match[2].trim().toLowerCase();
+  const charging = state.startsWith("charging") || state.includes("finishing charge");
+  return { percent, charging };
+}
+
+function publishBattery(next) {
+  const same = battery?.percent === next?.percent && battery?.charging === next?.charging;
+  battery = next;
+  if (!same) broadcast({ type: "battery", percent: next ? next.percent : null, charging: Boolean(next?.charging) });
+}
+
+function readBattery() {
+  execFile("pmset", ["-g", "batt"], { timeout: 2500 }, (error, stdout) => {
+    if (error) return;
+    publishBattery(parseBattery(stdout));
+  });
 }
 
 function writeHelper(message) {
@@ -369,7 +398,7 @@ function readReady(text) {
   for (const line of text.split(/\r?\n/)) {
     if (!line.startsWith("READY trusted=")) continue;
     trusted = line.includes("trusted=1");
-    broadcast({ type: "hello", trusted });
+    broadcast(helloPayload());
   }
 }
 
@@ -397,7 +426,7 @@ function startHelper() {
   child.on("exit", (code) => {
     if (helper === child) helper = null;
     trusted = false;
-    broadcast({ type: "hello", trusted: false });
+    broadcast(helloPayload());
     console.error(`Input helper exited (${code ?? "signal"}). Restarting…`);
     if (restartTimer) clearTimeout(restartTimer);
     restartTimer = setTimeout(() => {
@@ -416,7 +445,7 @@ const server = http.createServer((req, res) => {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
     });
-    res.end(JSON.stringify({ ok: true, trusted }));
+    res.end(JSON.stringify({ ok: true, trusted, battery }));
     return;
   }
   res.writeHead(404);
@@ -458,7 +487,7 @@ wss.on("connection", (ws) => {
       }
       active = ws;
       ws.knownIcons = new Set();
-      ws.send(JSON.stringify({ type: "hello", trusted }));
+      ws.send(JSON.stringify(helloPayload()));
       if (latestDesk) sendDesk(ws, latestDesk);
       watchDesk();
       return;
@@ -539,6 +568,8 @@ console.log("");
 
 startHelper();
 startDesk();
+readBattery();
+batteryTimer = setInterval(readBattery, 15000);
 server.listen(port, () => {
   console.log(`Agent listening on port ${port}`);
 });
@@ -546,6 +577,7 @@ server.listen(port, () => {
 function shutdown() {
   if (restartTimer) clearTimeout(restartTimer);
   if (deskTimer) clearInterval(deskTimer);
+  if (batteryTimer) clearInterval(batteryTimer);
   writeHelper({ op: "release" });
   helper?.kill("SIGTERM");
   desk?.kill("SIGTERM");
