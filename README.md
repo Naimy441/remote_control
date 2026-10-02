@@ -40,15 +40,20 @@ The pad tracks at most two fingers, each shown as a glowing ring.
 - Two-finger drag scrolls. A two-finger tap right-clicks.
 - Pinch zooms the active app (Command-plus / Command-minus).
 
-### Gyro mouse
+### Gyro pointer
 
-Tap the 3D-move icon at the top to move the pointer by turning or tilting the phone, and tap it again to stop. Turning follows the rotation around gravity and tilting follows the phone's pitch, so it works held flat or upright. While gyro is on, a one-finger drag (and two-finger drag) scrolls, and tap still clicks. Settings has a gyro sensitivity slider, a **Calibrate gyro** wizard, and a Reset button. iOS asks for Motion & Orientation access the first time, and that only works over HTTPS (see below).
+Tap the 3D-move icon at the top, hold the phone in portrait, and point its top edge at the screen like a remote or laser pointer. The phone's angle maps straight to a position on the Mac screen: the direction you point when you turn it on (or tap the crosshair to recenter) is the middle of the screen, and the edges sit at the ends of your comfortable wrist range. There is no pointer drift or getting stuck in corners, because position is a function of angle.
+
+- **Clicks and scrolling:** tap clicks and a finger drag scrolls. While a finger is on the pad (and for a moment after), the pointer is held at where it was just before the touch, so tapping does not jostle the aim.
+- **Hand tremor:** the aim is smoothed with a one-euro filter. Small shakes are filtered heavily while the pointer is nearly still, and the filter opens up for fast sweeps so quick moves have little lag.
+- **Recenter:** orientation sensors drift slowly in heading, so tap the crosshair that appears next to the gyro icon whenever the middle of the screen feels off.
+- The Gyro slider in Settings scales the range, **Calibrate gyro** fits it to you, and iOS asks for Motion & Orientation access the first time (HTTPS only, see below).
 
 #### Calibrating the gyro
 
-Settings → Calibrate gyro walks through four steps: rotate right, left, up, then down, as far as is comfortable, tapping Start and Done around each. The wizard measures how many degrees you can comfortably turn each way and sets a separate pixels-per-degree gain per direction so each edge of the screen is reachable (this fixes corners that feel harder than others). It also detects reversed axes. Run it again whenever you change how you hold the phone.
+Settings → Calibrate gyro walks through four steps: turn right, left, up, then down, as far as is comfortable, tapping Start and Done around each. The wizard measures the angle you can comfortably cover each way and sets a separate pixels-per-degree gain per direction so each screen edge is reachable. It also detects reversed axes. Gains are bounded to 20–45 px/deg. Run it again when you change how you hold the phone.
 
-Tuning lives in `agent/tune.json` on the Mac (git-ignored), is sent to the phone on connect, and can be edited by hand: `right`, `left`, `up`, `down` (pixels per degree), `accelDiv` and `accelMax` (speed boost), `deadzone` (deg/s), `smooth` (0 to 1), `flipX`, `flipY`. Restart or reconnect to apply manual edits. Raw sensor samples and the fitted result for each run are logged to `agent/calibration/*.jsonl` so the numbers can be reviewed and tuned further.
+Tuning lives in `agent/tune.json` on the Mac (git-ignored), is sent to the phone on connect, and can be edited by hand: `right`, `left`, `up`, `down` (pixels per degree), `minCutoff` (Hz, lower removes more tremor but adds lag when still) and `beta` (higher means less lag in fast moves), `flipX`, `flipY`. Reconnect to apply manual edits. Raw sensor samples and the fitted result for each run are logged to `agent/calibration/*.jsonl`.
 
 ## Buttons
 

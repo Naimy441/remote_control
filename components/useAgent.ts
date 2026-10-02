@@ -14,6 +14,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
   const [battery, setBattery] = useState<{ percent: number; charging: boolean } | null>(null);
   const [volume, setVolume] = useState<number | null>(null);
   const [tabIcons, setTabIcons] = useState<Record<string, string>>({});
+  const [protocol, setProtocol] = useState(0);
   const [tune, setTune] = useState<GyroTune | null>(null);
   const [display, setDisplay] = useState<DisplaySize | null>(null);
   const [playing, setPlaying] = useState<boolean | null>(null);
@@ -30,6 +31,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     const socket = socketRef.current;
     if (!openRef.current || !socket || socket.readyState !== WebSocket.OPEN) return false;
 
+    if (message.op === "moveto" && socket.bufferedAmount > 24000) return true;
     if (message.op === "move") {
       pending.current.dx += message.dx;
       pending.current.dy += message.dy;
@@ -72,6 +74,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     setVolume(null);
     setPlaying(null);
     setTune(null);
+    setProtocol(0);
     setDisplay(null);
     setTabIcons({});
     setMacClipboard(null);
@@ -127,6 +130,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           battery?: { percent?: number; charging?: boolean } | null;
           volume?: number | null;
           playing?: boolean;
+          protocol?: number;
           tune?: GyroTune;
           tabIcons?: Record<string, string>;
           display?: DisplaySize | null;
@@ -203,6 +207,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           }
           if (typeof message.volume === "number") setVolume(message.volume);
           if (typeof message.playing === "boolean") setPlaying(message.playing);
+          setProtocol(typeof message.protocol === "number" ? message.protocol : 1);
           if (message.tune) setTune(message.tune);
           if (message.display) setDisplay(message.display);
           setError("");
@@ -259,5 +264,5 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     };
   }, [active, generation, token, url]);
 
-  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, tune, display, tabIcons, macClipboard, error, send, desk, setDesk };
+  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, protocol, tune, display, tabIcons, macClipboard, error, send, desk, setDesk };
 }

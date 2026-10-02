@@ -98,6 +98,12 @@ function sanitize(message) {
       return { op: "fullscreen" };
     case "center":
       return { op: "center" };
+    case "moveto": {
+      const x = Number(message.x);
+      const y = Number(message.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { op: "moveto", x: clamp(x, -50000, 50000), y: clamp(y, -50000, 50000) };
+    }
     case "tune":
       return { op: "tune", tune: cleanTune(message.tune) };
     case "calib": {
@@ -170,7 +176,7 @@ let calibFile = "";
 
 const tuneDefaults = {
   right: 18, left: 18, up: 18, down: 18,
-  accelDiv: 40, accelMax: 3, deadzone: 0.6, smooth: 0.6,
+  minCutoff: 1.2, beta: 0.012, deadband: 0.8,
   flipX: false, flipY: false,
 };
 const tunePath = path.join(agentDir, "tune.json");
@@ -184,8 +190,7 @@ function cleanTune(raw) {
   };
   return {
     right: num("right", 2, 120), left: num("left", 2, 120), up: num("up", 2, 120), down: num("down", 2, 120),
-    accelDiv: num("accelDiv", 5, 400), accelMax: num("accelMax", 0, 8),
-    deadzone: num("deadzone", 0, 5), smooth: num("smooth", 0.05, 1),
+    minCutoff: num("minCutoff", 0.1, 10), beta: num("beta", 0, 1), deadband: num("deadband", 0, 10),
     flipX: Boolean(t.flipX), flipY: Boolean(t.flipY),
   };
 }
@@ -237,7 +242,7 @@ function broadcast(payload) {
 }
 
 function helloPayload() {
-  return { type: "hello", trusted, battery, volume, playing, tune, display };
+  return { type: "hello", protocol: 2, trusted, battery, volume, playing, tune, display };
 }
 
 function parseBattery(text) {
@@ -361,7 +366,7 @@ function watchClipboard() {
 
 function writeHelper(message) {
   if (!helper || helper.killed || !helper.stdin || helper.stdin.destroyed) return;
-  if ((message.op === "move" || message.op === "scroll") && !helperWritable) return;
+  if ((message.op === "move" || message.op === "moveto" || message.op === "scroll") && !helperWritable) return;
   const ok = helper.stdin.write(`${JSON.stringify(message)}\n`);
   if (!ok) helperWritable = false;
 }

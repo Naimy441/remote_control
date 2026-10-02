@@ -49,9 +49,11 @@ import {
   X,
   Check,
   Move3d,
+  Crosshair,
+  Hand,
   type LucideIcon,
 } from "lucide-react";
-import { calibSteps, defaultTune, fitTune, MIN_PEAK, type CalibStep } from "@/lib/gyro";
+import { aimAngles, analyzeTremor, calibSteps, type TremorResult, defaultTune, fitTune, MIN_PEAK, OneEuro, wrapDegrees, type CalibStep } from "@/lib/gyro";
 import { useAgent, type AgentStatus } from "@/components/useAgent";
 
 type Session = { url: string; token: string; generation: number };
@@ -92,7 +94,20 @@ export default function RemotePad() {
   const gyroSensRef = useRef(gyroSens);
   const tuneRef = useRef(defaultTune);
   const calibMode = useRef(false);
-  const calibAcc = useRef<{ x: number; y: number; peakX: number; peakY: number; rows: number[][]; flushed: number } | null>(null);
+  const calibAcc = useRef<{ az0: number; el0: number; peakX: number; peakY: number; rows: number[][] } | null>(null);
+  const tremorRec = useRef<number[][] | null>(null);
+  const tremorTimer = useRef(0);
+  const [tremor, setTremor] = useState<{
+    phase: "ready" | "measuring" | "done" | "retry";
+    progress: number;
+    result?: TremorResult;
+    note?: string;
+  } | null>(null);
+  const aimRef = useRef({ az: 0, el: 0 });
+  const originRef = useRef<{ az: number; el: number } | null>(null);
+  const needOrigin = useRef(true);
+  const touchRef = useRef(false);
+  const releasedRef = useRef(0);
   const modsRef = useRef(mods);
   const hintRef = useRef(hint);
   const [draftVolume, setDraftVolume] = useState<number | null>(null);
@@ -125,7 +140,7 @@ export default function RemotePad() {
     hintRef.current = hint;
   }, [dragLock, gyro, gyroSens, hint, mods, scrollMode, scrollSens, sens]);
 
-  const { status, trusted, rtt, battery, volume, setVolume, playing, tune: agentTune, display, tabIcons, macClipboard, error, send, desk, setDesk } = useAgent({
+  const { status, trusted, rtt, battery, volume, setVolume, playing, protocol, tune: agentTune, display, tabIcons, macClipboard, error, send, desk, setDesk } = useAgent({
     url: session?.url ?? "",
     token: session?.token ?? "",
     active: session !== null,
@@ -165,6 +180,11 @@ export default function RemotePad() {
 
   const isPlaying = playOverride ?? playing ?? false;
   const tune = agentTune ?? defaultTune;
+  useEffect(() => {
+    const timer = tremorTimer.current;
+    return () => window.clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     tuneRef.current = tune;
   }, [tune]);
@@ -237,67 +257,79 @@ export default function RemotePad() {
 
   useEffect(() => {
     if (!gyro || !session) return;
-    // Rotation about the gravity axis is yaw, rotation about the phone's x axis is pitch,
-    // so the pointer follows where the phone points however it is held.
-    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-    let last = 0;
-    let fx = 0;
-    let fy = 0;
-    const onMotion = (event: DeviceMotionEvent) => {
+    // The phone's top edge is the pointer: its azimuth and elevation, measured from the
+    // orientation captured at recenter, map straight to a screen position.
+    const filters = { x: new OneEuro(1, 0), y: new OneEuro(1, 0) };
+    const history: { t: number; x: number; y: number }[] = [];
+    let frozen: { x: number; y: number } | null = null;
+    let sent = { x: -1e9, y: -1e9 };
+    const onOrient = (event: DeviceOrientationEvent) => {
+      if (event.alpha === null || event.beta === null) return;
       const now = performance.now();
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
-      if (!dt) return;
-      const rate = event.rotationRate;
-      const grav = event.accelerationIncludingGravity;
-      if (!rate || !grav) return;
-      // iOS Safari reports rotationRate as (x, y, z) in (alpha, beta, gamma); the spec says (z, x, y).
-      const wx = (ios ? rate.alpha : rate.beta) ?? 0;
-      const wy = (ios ? rate.beta : rate.gamma) ?? 0;
-      const wz = (ios ? rate.gamma : rate.alpha) ?? 0;
-      const norm = Math.hypot(grav.x ?? 0, grav.y ?? 0, grav.z ?? 0) || 1;
-      const sign = ios ? -1 : 1;
-      const yaw = sign * (wx * (grav.x ?? 0) + wy * (grav.y ?? 0) + wz * (grav.z ?? 0)) / norm;
-      // Unflipped axes: turning right is +x, tipping the top down is +y.
-      const ux = -yaw;
-      const uy = -wx;
+      const { az, el } = aimAngles(event.alpha, event.beta);
+      aimRef.current = { az, el };
+
       const acc = calibAcc.current;
       if (acc) {
-        acc.x += ux * dt;
-        acc.y += uy * dt;
-        if (Math.abs(acc.x) > Math.abs(acc.peakX)) acc.peakX = acc.x;
-        if (Math.abs(acc.y) > Math.abs(acc.peakY)) acc.peakY = acc.y;
+        const x = wrapDegrees(az - acc.az0);
+        const y = -(el - acc.el0);
+        if (Math.abs(x) > Math.abs(acc.peakX)) acc.peakX = x;
+        if (Math.abs(y) > Math.abs(acc.peakY)) acc.peakY = y;
         const r = (v: number) => Math.round(v * 100) / 100;
-        acc.rows.push([Math.round(now), r(wx), r(wy), r(wz), r(grav.x ?? 0), r(grav.y ?? 0), r(grav.z ?? 0), r(ux), r(uy)]);
-        if (acc.rows.length >= 24) {
-          send({ op: "calib", step: "samples", rows: acc.rows.splice(0) });
+        acc.rows.push([Math.round(now), r(event.alpha), r(event.beta), r(event.gamma ?? 0), r(x), r(y)]);
+        if (acc.rows.length >= 24) send({ op: "calib", step: "samples", rows: acc.rows.splice(0) });
+        return;
+      }
+      const rec = tremorRec.current;
+      if (rec) {
+        rec.push([now, az, el]);
+        return;
+      }
+      if (calibMode.current || !display) return;
+      // Ignore the jolt of tapping the button, then take the current aim as the screen center.
+      if (now < settleUntil.current) return;
+      if (needOrigin.current || !originRef.current) {
+        originRef.current = { az, el };
+        needOrigin.current = false;
+        filters.x.reset();
+        filters.y.reset();
+        history.length = 0;
+        frozen = null;
+        sent = { x: -1e9, y: -1e9 };
+      }
+      const origin = originRef.current;
+      const t = tuneRef.current;
+      const sens = gyroSensRef.current;
+      const right = wrapDegrees(az - origin.az) * (t.flipX ? -1 : 1);
+      const down = -(el - origin.el) * (t.flipY ? -1 : 1);
+      const rawX = display.w / 2 + right * sens * (right > 0 ? t.right : t.left);
+      const rawY = display.h / 2 + down * sens * (down > 0 ? t.down : t.up);
+      filters.x.minCutoff = filters.y.minCutoff = t.minCutoff;
+      filters.x.beta = filters.y.beta = t.beta;
+      const x = Math.min(display.w - 1, Math.max(0, filters.x.filter(rawX, now)));
+      const y = Math.min(display.h - 1, Math.max(0, filters.y.filter(rawY, now)));
+
+      // While a finger is on the pad (and just after), hold the pointer where it was a moment
+      // before the touch, so tapping or scrolling does not shove the pointer off its target.
+      if (touchRef.current || now - releasedRef.current < 200) {
+        if (!frozen) {
+          const past = history.find((h) => h.t >= now - 120) ?? history[history.length - 1];
+          frozen = past ? { x: past.x, y: past.y } : { x, y };
+          sent = frozen;
+          send({ op: "moveto", x: frozen.x, y: frozen.y });
         }
         return;
       }
-      if (calibMode.current) return;
-      if (now < settleUntil.current) {
-        // Ignore the jolt of tapping the gyro button so the pointer stays at the center.
-        fx = 0;
-        fy = 0;
-        return;
-      }
-      const t = tuneRef.current;
-      fx += ((t.flipX ? -ux : ux) - fx) * t.smooth;
-      fy += ((t.flipY ? -uy : uy) - fy) * t.smooth;
-      const speed = Math.hypot(fx, fy);
-      // Faster sweeps travel farther, so a small wrist flick still reaches every corner.
-      const boost = 1 + Math.min(speed / t.accelDiv, t.accelMax);
-      const quiet = (value: number) => (Math.abs(value) < t.deadzone ? 0 : value);
-      const qx = quiet(fx);
-      const qy = quiet(fy);
-      const scale = dt * gyroSensRef.current * boost;
-      const dx = qx * scale * (qx > 0 ? t.right : t.left);
-      const dy = qy * scale * (qy > 0 ? t.down : t.up);
-      if (dx || dy) send({ op: "move", dx, dy });
+      frozen = null;
+      history.push({ t: now, x, y });
+      while (history.length && history[0].t < now - 400) history.shift();
+      if (Math.hypot(x - sent.x, y - sent.y) < t.deadband) return;
+      sent = { x, y };
+      send({ op: "moveto", x, y });
     };
-    window.addEventListener("devicemotion", onMotion);
-    return () => window.removeEventListener("devicemotion", onMotion);
-  }, [gyro, send, session]);
+    window.addEventListener("deviceorientation", onOrient);
+    return () => window.removeEventListener("deviceorientation", onOrient);
+  }, [display, gyro, send, session]);
 
   useEffect(() => {
     if (status !== "open") return;
@@ -407,6 +439,7 @@ export default function RemotePad() {
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       maxPointers = Math.max(maxPointers, pointers.size);
       dot(event.pointerId, event.clientX, event.clientY);
+      touchRef.current = true;
       if (pointers.size === 1) {
         traveled = 0;
         gesture = "pending";
@@ -488,6 +521,10 @@ export default function RemotePad() {
       if (!pointers.has(event.pointerId)) return;
       pointers.delete(event.pointerId);
       undot(event.pointerId);
+      if (pointers.size === 0) {
+        touchRef.current = false;
+        releasedRef.current = performance.now();
+      }
       clearArm();
       if (pointers.size > 0) return;
       const tap = traveled < 14 && gesture === "pending";
@@ -572,15 +609,22 @@ export default function RemotePad() {
       setGyro(false);
       return;
     }
-    if (await enableGyro()) {
-      settleUntil.current = performance.now() + 700;
-      send({ op: "center" });
-    }
+    if (await enableGyro()) recenter();
+  }
+
+  function recenter() {
+    settleUntil.current = performance.now() + 450;
+    needOrigin.current = true;
+    if (display) send({ op: "moveto", x: display.w / 2, y: display.h / 2 });
   }
 
   async function enableGyro() {
     if (gyroRef.current) return true;
-    const motion = window.DeviceMotionEvent as unknown as { requestPermission?: () => Promise<string> } | undefined;
+    if (protocol < 2) {
+      notify("Restart the Mac agent (npm run mac) to update it");
+      return false;
+    }
+    const motion = window.DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> } | undefined;
     if (!motion) {
       notify("This browser has no motion sensors");
       return false;
@@ -610,20 +654,72 @@ export default function RemotePad() {
     if (!(await enableGyro())) return;
     setSettingsOpen(false);
     calibMode.current = true;
-    settleUntil.current = performance.now() + 700;
-    send({ op: "center" });
+    recenter();
     send({ op: "calib", step: "begin", data: { display, tune: tuneRef.current, agent: navigator.userAgent } });
     setCalib({ step: 0, phase: "ready", note: "", peaks: {} });
+  }
+
+  async function startTremorTest() {
+    if (!display) {
+      notify("Restart the Mac agent so it reports the screen size");
+      return;
+    }
+    if (!(await enableGyro())) return;
+    setSettingsOpen(false);
+    calibMode.current = true;
+    setTremor({ phase: "ready", progress: 0 });
+  }
+
+  function cancelTremorTest() {
+    window.clearInterval(tremorTimer.current);
+    tremorRec.current = null;
+    calibMode.current = false;
+    needOrigin.current = true;
+    setTremor(null);
+  }
+
+  function beginTremorTest() {
+    tremorRec.current = [];
+    const started = performance.now();
+    setTremor({ phase: "measuring", progress: 0 });
+    window.clearInterval(tremorTimer.current);
+    tremorTimer.current = window.setInterval(() => {
+      const progress = Math.min(1, (performance.now() - started) / 6800);
+      if (progress < 1) {
+        setTremor({ phase: "measuring", progress });
+        return;
+      }
+      window.clearInterval(tremorTimer.current);
+      const samples = tremorRec.current ?? [];
+      tremorRec.current = null;
+      const rows = samples.map((row) => row.map((v) => Math.round(v * 100) / 100));
+      for (let i = 0; i < rows.length; i += 150) send({ op: "calib", step: "tremor-samples", rows: rows.slice(i, i + 150) });
+      const result = analyzeTremor(samples, tuneRef.current, gyroSensRef.current);
+      if (!result || result.drift > 4) {
+        send({ op: "calib", step: "tremor-result", data: { ok: false, drift: result?.drift ?? null } });
+        setTremor({
+          phase: "retry",
+          progress: 1,
+          note: "The phone moved too much. Brace your arm and hold it as still as you can.",
+        });
+        return;
+      }
+      const fitted = { ...tuneRef.current, ...result.tune };
+      send({ op: "tune", tune: fitted });
+      send({ op: "calib", step: "tremor-result", data: { ok: true, rmsPx: result.rmsPx, freq: result.freq, drift: result.drift, tune: result.tune } });
+      setTremor({ phase: "done", progress: 1, result });
+    }, 100);
   }
 
   function cancelCalibration() {
     calibAcc.current = null;
     calibMode.current = false;
+    needOrigin.current = true;
     setCalib(null);
   }
 
   function beginCalibStep() {
-    calibAcc.current = { x: 0, y: 0, peakX: 0, peakY: 0, rows: [], flushed: 0 };
+    calibAcc.current = { az0: aimRef.current.az, el0: aimRef.current.el, peakX: 0, peakY: 0, rows: [] };
     setCalib((c) => (c ? { ...c, phase: "moving", note: "" } : c));
   }
 
@@ -649,6 +745,7 @@ export default function RemotePad() {
     send({ op: "tune", tune: fitted });
     send({ op: "calib", step: "fit", data: { peaks, tune: fitted } });
     calibMode.current = false;
+    needOrigin.current = true;
     setCalib({ step: current.step, phase: "done", note: "", peaks });
   }
 
@@ -857,6 +954,8 @@ export default function RemotePad() {
   const toastText = useLast(toast);
   const calibPresence = usePresence(calib !== null, 260);
   const calibView = useLast(calib);
+  const tremorPresence = usePresence(tremor !== null, 260);
+  const tremorView = useLast(tremor);
   const pastePresence = usePresence(pasteOpen);
   const settingsPresence = usePresence(settingsOpen && session !== null);
   const tabAsk = usePresence(pendingTab !== null);
@@ -888,11 +987,16 @@ export default function RemotePad() {
               {battery.percent}%
             </span>
           ) : null}
+          {session && gyro ? (
+            <button type="button" className="icon-button" aria-label="Recenter pointer" onClick={recenter}>
+              <Crosshair />
+            </button>
+          ) : null}
           {session ? (
             <button
               type="button"
               className="icon-button"
-              aria-label="Gyro mouse"
+              aria-label="Gyro pointer"
               aria-pressed={gyro}
               data-on={gyro ? "true" : "false"}
               onClick={() => void toggleGyro()}
@@ -936,7 +1040,7 @@ export default function RemotePad() {
             {hintPresence.mounted ? (
               <p className="hint" data-state={hintPresence.state}>
                 {gyro
-                  ? "Turn or tilt the phone to move the pointer. Drag to scroll. Tap to click."
+                  ? "Point the top of the phone at the screen. Drag to scroll. Tap to click. Crosshair recenters."
                   : scrollMode
                   ? "One finger scrolls. Tap still clicks."
                   : "Drag to move. Tap to click. Hold to drag. Two fingers scroll."}
@@ -987,6 +1091,42 @@ export default function RemotePad() {
             </div>
           </section>
         ) : null}
+        {tremorPresence.mounted && tremorView ? (
+          <section className="calib" aria-label="Hand tremor test" data-state={tremorPresence.state}>
+            <button type="button" className="icon-button calib-close" aria-label="Cancel tremor test" onClick={cancelTremorTest}>
+              <X />
+            </button>
+            <div className="calib-body" key={tremorView.phase}>
+              {tremorView.phase === "done" && tremorView.result ? (
+                <>
+                  <Check className="calib-icon" />
+                  <h2>Smoothing set</h2>
+                  <p>
+                    Your shake is about {tremorView.result.rmsPx.toFixed(1)} px at {tremorView.result.freq.toFixed(0)} Hz. The pointer filter
+                    now cuts it ({tremorView.result.tune.minCutoff.toFixed(1)} Hz cutoff, {tremorView.result.tune.deadband.toFixed(1)} px
+                    deadband).
+                  </p>
+                  <button type="button" className="primary" onClick={cancelTremorTest}>Done</button>
+                </>
+              ) : tremorView.phase === "measuring" ? (
+                <>
+                  <Hand className="calib-icon" />
+                  <h2>Hold still</h2>
+                  <p>Aim at the middle of the screen and keep the phone as steady as you can.</p>
+                  <div className="meter" aria-hidden="true"><i style={{ width: `${Math.round(tremorView.progress * 100)}%` }} /></div>
+                </>
+              ) : (
+                <>
+                  <Hand className="calib-icon" />
+                  <h2>Hand tremor</h2>
+                  <p>Hold the phone the way you point with it, aimed at the screen, then tap Start and keep it as still as you can for a few seconds.</p>
+                  {tremorView.note ? <p className="calib-note">{tremorView.note}</p> : null}
+                  <button type="button" className="primary" onClick={beginTremorTest}>Start</button>
+                </>
+              )}
+            </div>
+          </section>
+        ) : null}
         {pastePresence.mounted ? (
           <section className="sheet" data-state={pastePresence.state}>
             <h2>Send to Mac</h2>
@@ -1004,6 +1144,7 @@ export default function RemotePad() {
             <Slider label="Pointer" value={sens} min={0.4} max={4} step={0.1} onChange={setSens} />
             <Slider label="Scroll" value={scrollSens} min={0.5} max={8} step={0.1} onChange={setScrollSens} />
             <Slider label="Gyro" value={gyroSens} min={0.3} max={3} step={0.1} onChange={setGyroSens} />
+            <button type="button" onClick={() => void startTremorTest()}>Measure hand tremor</button>
             <div className="sheet-actions">
               <button type="button" className="primary" onClick={() => void startCalibration()}>Calibrate gyro</button>
               <button type="button" onClick={() => send({ op: "tune", tune: defaultTune })}>Reset</button>

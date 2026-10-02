@@ -403,6 +403,14 @@ func handle(_ object: [String: Any]) {
   switch string(object, "op") {
   case "move":
     move(dx: number(object, "dx"), dy: number(object, "dy"))
+  case "moveto":
+    // Absolute pointer position in global display coordinates (used by the gyro pointer).
+    let target = clampToDisplays(CGPoint(x: number(object, "x"), y: number(object, "y")))
+    if let held = heldButton {
+      place(target, type: dragType(held), button: held)
+    } else {
+      place(target, type: .mouseMoved, button: .left)
+    }
   case "center":
     // Placed through the same path as moves so the tracked pointer stays in sync and
     // later gyro moves start from the middle of the screen instead of the old position.

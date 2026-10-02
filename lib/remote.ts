@@ -15,6 +15,7 @@ export type AgentMessage =
   | { op: "tab" | "closetab"; browser: BrowserKind; index: number; count: number }
   | { op: "fullscreen" }
   | { op: "center" }
+  | { op: "moveto"; x: number; y: number }
   | { op: "tune"; tune: GyroTune }
   | { op: "calib"; step: string; rows?: number[][]; data?: Record<string, unknown> }
   | { op: "browse"; action: "back" | "forward" | "reload" | "newtab" }
