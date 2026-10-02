@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { formatToken, loadToken, tokenMatches } from "./token.mjs";
-import { pageOrigins } from "./net.mjs";
+import { enableTailscaleHttps, pageOrigins } from "./net.mjs";
 import { activateTab, automationDenied, browserKind, browserName, firefoxChords, listTabs } from "./tabs.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,6 +100,22 @@ function sanitize(message) {
         return null;
       }
       return { op: "browse", action: message.action };
+    case "workspace":
+      if (!["mission-control", "left", "right"].includes(message.action)) return null;
+      return { op: "workspace", action: message.action };
+    case "zoom":
+      if (!["in", "out", "reset"].includes(message.direction)) return null;
+      return { op: "zoom", direction: message.direction };
+    case "media":
+      if (message.action === "toggle") return { op: "media", action: "toggle" };
+      if (message.action === "volume") return { op: "media", action: "volume", value: clamp(message.value, 0, 100) };
+      return null;
+    case "clipboard":
+      if (message.action === "read") return { op: "clipboard", action: "read" };
+      if (message.action === "write" && typeof message.text === "string" && message.text.length <= 30000) {
+        return { op: "clipboard", action: "write", text: message.text };
+      }
+      return null;
     case "tab":
       if (message.browser !== "chromium" && message.browser !== "safari" && message.browser !== "firefox") return null;
       return {
@@ -129,6 +145,12 @@ let deskTimer = null;
 let latestDesk = null;
 let battery = null;
 let batteryTimer = null;
+let volume = null;
+let volumeTimer = null;
+let playing = false;
+let playingTimer = null;
+let clipboard = null;
+let clipboardTimer = null;
 
 function broadcast(payload) {
   const data = JSON.stringify(payload);
@@ -136,7 +158,7 @@ function broadcast(payload) {
 }
 
 function helloPayload() {
-  return { type: "hello", trusted, battery };
+  return { type: "hello", trusted, battery, volume, playing };
 }
 
 function parseBattery(text) {
@@ -160,6 +182,102 @@ function readBattery() {
     if (error) return;
     publishBattery(parseBattery(stdout));
   });
+}
+
+function publishVolume(next) {
+  if (volume === next) return;
+  volume = next;
+  broadcast({ type: "media", volume });
+}
+
+function readPlaying() {
+  // macOS keeps an audio-out power assertion while any app is producing sound.
+  execFile("pmset", ["-g", "assertions"], { timeout: 2500 }, (error, stdout) => {
+    if (error) return;
+    const next = /audio-out|audio-playing/.test(String(stdout));
+    if (next === playing) return;
+    playing = next;
+    broadcast({ type: "playing", playing });
+  });
+}
+
+function readVolume() {
+  execFile("osascript", ["-e", "output volume of (get volume settings)"], { timeout: 2500 }, (error, stdout) => {
+    if (error) return;
+    const next = Number(String(stdout).trim());
+    if (Number.isInteger(next) && next >= 0 && next <= 100) publishVolume(next);
+  });
+}
+
+let volumeBusy = false;
+let volumeQueued = null;
+
+function writeVolume(next) {
+  volumeQueued = Math.round(clamp(next, 0, 100));
+  if (volumeBusy) return;
+  volumeBusy = true;
+  const value = volumeQueued;
+  volumeQueued = null;
+  execFile("osascript", ["-e", `set volume output volume ${value}`], { timeout: 2500 }, (error) => {
+    volumeBusy = false;
+    if (volumeQueued !== null) writeVolume(volumeQueued);
+    else if (!error) publishVolume(value);
+  });
+}
+
+function clipboardText(callback) {
+  execFile("pbpaste", ["-Prefer", "txt"], { encoding: "utf8", timeout: 2500, maxBuffer: 65536 }, (error, stdout) => {
+    if (error) return;
+    const text = String(stdout).slice(0, 30000);
+    callback(text, stdout.length > text.length);
+  });
+}
+
+function publishClipboard(text, truncated = false) {
+  if (clipboard === text) return;
+  clipboard = text;
+  broadcast({ type: "clipboard", text, truncated });
+}
+
+function pollClipboard() {
+  if (!active) return;
+  clipboardText((text, truncated) => publishClipboard(text, truncated));
+}
+
+function readClipboard(ws) {
+  clipboardText((text, truncated) => {
+    clipboard = text;
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: "clipboard", text, truncated }));
+  });
+}
+
+function writeClipboard(text, ws) {
+  const child = spawn("pbcopy", [], { stdio: ["pipe", "ignore", "ignore"] });
+  child.stdin.end(text);
+  child.on("exit", (code) => {
+    if (code === 0) {
+      clipboard = text;
+      if (ws?.readyState === 1) ws.send(JSON.stringify({ type: "clipboard", text }));
+    }
+  });
+}
+
+function watchSystemStats() {
+  if (batteryTimer) clearInterval(batteryTimer);
+  if (volumeTimer) clearInterval(volumeTimer);
+  batteryTimer = setInterval(readBattery, 15000);
+  volumeTimer = setInterval(readVolume, 10000);
+  if (playingTimer) clearInterval(playingTimer);
+  playingTimer = setInterval(readPlaying, 1500);
+  readBattery();
+  readVolume();
+  readPlaying();
+}
+
+function watchClipboard() {
+  if (clipboardTimer) return;
+  clipboardTimer = setInterval(pollClipboard, 1500);
+  pollClipboard();
 }
 
 function writeHelper(message) {
@@ -330,7 +448,8 @@ function sendChord(name, mods = {}) {
 }
 
 function watchDesk() {
-  if (deskTimer || !active) return;
+  if (!active) return;
+  if (deskTimer) clearInterval(deskTimer);
   deskTimer = setInterval(() => {
     if (!active) {
       clearInterval(deskTimer);
@@ -455,7 +574,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({
   server,
   perMessageDeflate: false,
-  maxPayload: 16 * 1024,
+  maxPayload: 64 * 1024,
 });
 
 wss.on("connection", (ws) => {
@@ -490,6 +609,9 @@ wss.on("connection", (ws) => {
       ws.send(JSON.stringify(helloPayload()));
       if (latestDesk) sendDesk(ws, latestDesk);
       watchDesk();
+      readVolume();
+      readPlaying();
+      readClipboard(ws);
       return;
     }
 
@@ -526,6 +648,38 @@ wss.on("connection", (ws) => {
       if (chord) sendChord(chord.name, chord);
       return;
     }
+    if (clean.op === "workspace") {
+      if (clean.action === "mission-control") {
+        execFile("open", ["-a", "Mission Control"], { timeout: 2500 }, () => {});
+        return;
+      }
+      const chord = {
+        "mission-control": { name: "up", ctrl: true },
+        left: { name: "left", ctrl: true },
+        right: { name: "right", ctrl: true },
+      }[clean.action];
+      sendChord(chord.name, chord);
+      return;
+    }
+    if (clean.op === "zoom") {
+      const chord = {
+        in: { name: "=", cmd: true },
+        out: { name: "-", cmd: true },
+        reset: { name: "0", cmd: true },
+      }[clean.direction];
+      sendChord(chord.name, chord);
+      return;
+    }
+    if (clean.op === "media") {
+      if (clean.action === "toggle") writeHelper({ op: "media", action: "toggle" });
+      else writeVolume(clean.value);
+      return;
+    }
+    if (clean.op === "clipboard") {
+      if (clean.action === "read") readClipboard(ws);
+      else writeClipboard(clean.text, ws);
+      return;
+    }
     writeHelper(clean);
   });
 
@@ -546,11 +700,11 @@ server.on("error", (error) => {
   throw error;
 });
 
+if (!process.env.NO_TAILSCALE_HTTPS) enableTailscaleHttps(webPort, port);
 const origins = pageOrigins(webPort);
 const links = origins.length
   ? origins.map((origin) => `${origin}/#t=${formatToken(token)}`)
   : [`http://127.0.0.1:${webPort}/#t=${formatToken(token)}`];
-const link = links[0];
 fs.writeFileSync(path.join(agentDir, "link.txt"), `${links.join("\n")}\n`, { mode: 0o600 });
 
 console.log("");
@@ -568,8 +722,8 @@ console.log("");
 
 startHelper();
 startDesk();
-readBattery();
-batteryTimer = setInterval(readBattery, 15000);
+watchSystemStats();
+watchClipboard();
 server.listen(port, () => {
   console.log(`Agent listening on port ${port}`);
 });
@@ -578,6 +732,9 @@ function shutdown() {
   if (restartTimer) clearTimeout(restartTimer);
   if (deskTimer) clearInterval(deskTimer);
   if (batteryTimer) clearInterval(batteryTimer);
+  if (volumeTimer) clearInterval(volumeTimer);
+  if (playingTimer) clearInterval(playingTimer);
+  if (clipboardTimer) clearInterval(clipboardTimer);
   writeHelper({ op: "release" });
   helper?.kill("SIGTERM");
   desk?.kill("SIGTERM");

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatToken, tokenFile } from "../agent/token.mjs";
-import { pageOrigins } from "../agent/net.mjs";
+import { enableTailscaleHttps, pageOrigins } from "../agent/net.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
@@ -105,6 +105,7 @@ while (!fs.existsSync(file)) {
 }
 
 const token = formatToken(fs.readFileSync(file, "utf8"));
+if (!process.env.NO_TAILSCALE_HTTPS) enableTailscaleHttps(webPort, agentPort);
 const origins = pageOrigins(Number(webPort));
 console.log("");
 console.log("On your iPhone, with Tailscale connected, open:");

@@ -12,7 +12,11 @@ export type AgentMessage =
   | { op: "quit"; id: string }
   | { op: "tab"; browser: BrowserKind; index: number; count: number }
   | { op: "fullscreen" }
-  | { op: "browse"; action: "back" | "forward" | "reload" | "newtab" };
+  | { op: "browse"; action: "back" | "forward" | "reload" | "newtab" }
+  | { op: "workspace"; action: "mission-control" | "left" | "right" }
+  | { op: "zoom"; direction: "in" | "out" | "reset" }
+  | { op: "media"; action: "toggle" | "volume"; value?: number }
+  | { op: "clipboard"; action: "read" | "write"; text?: string };
 
 export type BrowserKind = "chromium" | "safari" | "firefox";
 
@@ -79,8 +83,9 @@ export function normalizeAgentUrl(raw: string): string {
 
 export function defaultAgentUrl(): string {
   if (typeof window === "undefined") return "";
-  if (window.location.protocol === "https:") return "";
   const host = window.location.hostname;
+  // Tailscale Serve exposes the agent as wss on :8443 next to the https page.
+  if (window.location.protocol === "https:") return host.endsWith(".ts.net") ? `wss://${host}:8443` : "";
   const local =
     host === "localhost" ||
     host === "127.0.0.1" ||

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   browserKind,
   defaultAgentUrl,
@@ -12,6 +12,44 @@ import {
   specialKey,
   type Mods,
 } from "@/lib/remote";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpDown,
+  BatteryCharging,
+  BatteryFull,
+  BatteryLow,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
+  ClipboardCopy,
+  ClipboardPaste,
+  Delete,
+  Grab,
+  Keyboard,
+  Maximize,
+  MousePointerClick,
+  Pause,
+  ArrowBigUp,
+  Command,
+  Option,
+  LayoutGrid,
+  ChevronUp,
+  Play,
+  Plus,
+  RotateCw,
+  Settings,
+  SquareMenu,
+  Volume1,
+  Volume2,
+  VolumeX,
+  X,
+  Check,
+  type LucideIcon,
+} from "lucide-react";
 import { useAgent, type AgentStatus } from "@/components/useAgent";
 
 type Session = { url: string; token: string; generation: number };
@@ -41,6 +79,19 @@ export default function RemotePad() {
   const scrollModeRef = useRef(scrollMode);
   const modsRef = useRef(mods);
   const hintRef = useRef(hint);
+  const [draftVolume, setDraftVolume] = useState<number | null>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
+  const dockPos = useRef(new Map<string, number>());
+  const [toast, setToast] = useState("");
+  const [playOverride, setPlayOverride] = useState<boolean | null>(null);
+  const playTimer = useRef(0);
+  const toastTimer = useRef(0);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const pasteRef = useRef<HTMLTextAreaElement>(null);
+  const volumeSentAt = useRef(0);
+  const volumeTimer = useRef(0);
+  const volumeRelease = useRef(0);
+  const latestVolume = useRef(50);
   const recentKey = useRef<Record<string, number>>({});
   const composedAt = useRef(0);
   const composing = useRef(false);
@@ -54,12 +105,43 @@ export default function RemotePad() {
     hintRef.current = hint;
   }, [dragLock, hint, mods, scrollMode, scrollSens, sens]);
 
-  const { status, trusted, rtt, battery, error, send, desk, setDesk } = useAgent({
+  const { status, trusted, rtt, battery, volume, setVolume, playing, macClipboard, error, send, desk, setDesk } = useAgent({
     url: session?.url ?? "",
     token: session?.token ?? "",
     active: session !== null,
     generation: session?.generation ?? 0,
   });
+
+  const dockIds = desk?.apps.map((app) => app.id).join("|") ?? "";
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    if (!dock) {
+      dockPos.current.clear();
+      return;
+    }
+    const first = dockPos.current.size === 0;
+    const next = new Map<string, number>();
+    for (const child of Array.from(dock.children) as HTMLElement[]) {
+      const id = child.dataset.appId;
+      if (!id) continue;
+      const left = child.offsetLeft;
+      next.set(id, left);
+      if (first) continue;
+      const before = dockPos.current.get(id);
+      if (before === undefined) {
+        child.animate(
+          [{ opacity: 0, transform: "scale(0.4) translateY(10px)" }, { opacity: 1, transform: "none" }],
+          { duration: 320, easing: "cubic-bezier(0.2, 0.9, 0.3, 1.2)" },
+        );
+      } else if (before !== left) {
+        child.animate(
+          [{ transform: `translateX(${before - left}px)` }, { transform: "none" }],
+          { duration: 340, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+        );
+      }
+    }
+    dockPos.current = next;
+  }, [dockIds]);
 
   function restoreSession(saved: {
     url: string;
@@ -97,15 +179,17 @@ export default function RemotePad() {
       localStorage.setItem("remote.token", nextToken);
     }
     // The token and agent address live in localStorage, which exists only after hydration.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    restoreSession({
-      url: savedUrl,
-      token: nextToken ? formatToken(nextToken) : "",
-      sens: Number.isFinite(savedSens) && savedSens >= 0.4 && savedSens <= 4 ? savedSens : null,
-      scroll: Number.isFinite(savedScroll) && savedScroll >= 0.5 && savedScroll <= 8 ? savedScroll : null,
-      scrollMode: localStorage.getItem("remote.scrollmode") === "1",
-      session: savedUrl && nextToken.length >= 4 ? { url: savedUrl, token: nextToken, generation: 1 } : null,
-    });
+    const restoreTimer = window.setTimeout(() => {
+      restoreSession({
+        url: savedUrl,
+        token: nextToken ? formatToken(nextToken) : "",
+        sens: Number.isFinite(savedSens) && savedSens >= 0.4 && savedSens <= 4 ? savedSens : null,
+        scroll: Number.isFinite(savedScroll) && savedScroll >= 0.5 && savedScroll <= 8 ? savedScroll : null,
+        scrollMode: localStorage.getItem("remote.scrollmode") === "1",
+        session: savedUrl && nextToken.length >= 4 ? { url: savedUrl, token: nextToken, generation: 1 } : null,
+      });
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
   }, []);
 
   useEffect(() => {
@@ -133,7 +217,7 @@ export default function RemotePad() {
 
     const blockMove = (event: TouchEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.closest("[data-scroll]")) return;
+      if (target instanceof Element && (target.closest("[data-scroll]") || target.closest('input[type="range"]'))) return;
       event.preventDefault();
     };
     const blockGesture = (event: Event) => event.preventDefault();
@@ -159,18 +243,30 @@ export default function RemotePad() {
     let traveled = 0;
     let maxPointers = 0;
     let dragging = false;
-    let gesture: "pending" | "move" | "scroll" | "drag" | "pan" = "pending";
+    let gesture: "pending" | "move" | "scroll" | "drag" | "pan" | "pinch" = "pending";
     let arm = 0;
     let originX = 0;
     let originY = 0;
+    let pinchDistance = 0;
+    let twoFingerMoved = 0;
     let lastTap = { t: 0, x: 0, y: 0 };
 
     const clearArm = () => {
       if (arm) window.clearTimeout(arm);
       arm = 0;
     };
+    const distance = () => {
+      const [a, b] = [...pointers.values()];
+      return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+    };
+    const scrollBy = (dx: number, dy: number) => {
+      const x = dx * scrollSensRef.current;
+      const y = dy * scrollSensRef.current;
+      if (!x && !y) return;
+      send({ op: "scroll", dx: x, dy: y });
+    };
     const beginDrag = () => {
-      if (dragging || gesture === "scroll") return;
+      if (dragging || gesture === "scroll" || gesture === "pinch") return;
       dragging = true;
       gesture = "drag";
       el.dataset.dragging = "true";
@@ -182,36 +278,52 @@ export default function RemotePad() {
       delete el.dataset.dragging;
       send({ op: "up", button: "left" });
     };
-    const glow = (x: number, y: number, on: boolean) => {
+    const dots = new Map<number, HTMLDivElement>();
+    const dot = (id: number, x: number, y: number) => {
       const rect = el.getBoundingClientRect();
-      el.style.setProperty("--x", `${x - rect.left}px`);
-      el.style.setProperty("--y", `${y - rect.top}px`);
-      el.style.setProperty("--glow", on ? "1" : "0");
+      let node = dots.get(id);
+      if (!node) {
+        node = document.createElement("div");
+        node.className = "touch-dot";
+        el.appendChild(node);
+        dots.set(id, node);
+      }
+      node.style.transform = `translate(${x - rect.left}px, ${y - rect.top}px)`;
+    };
+    const undot = (id: number) => {
+      dots.get(id)?.remove();
+      dots.delete(id);
     };
 
     const onDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
       if (event.target instanceof Element && event.target.closest("button")) return;
       event.preventDefault();
+      if (pointers.size >= 2) return;
       el.setPointerCapture(event.pointerId);
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       maxPointers = Math.max(maxPointers, pointers.size);
-      glow(event.clientX, event.clientY, true);
-      if (pointers.size >= 2) {
+      dot(event.pointerId, event.clientX, event.clientY);
+      if (pointers.size === 1) {
+        traveled = 0;
+        gesture = "pending";
+        originX = event.clientX;
+        originY = event.clientY;
         clearArm();
-        endDrag();
+        if (scrollModeRef.current) return;
+        arm = window.setTimeout(() => {
+          if (scrollModeRef.current) return;
+          if (pointers.size === 1 && traveled < 14) beginDrag();
+        }, dragLockRef.current ? 40 : 340);
         return;
       }
-      traveled = 0;
-      gesture = "pending";
-      originX = event.clientX;
-      originY = event.clientY;
-      clearArm();
-      if (scrollModeRef.current) return;
-      arm = window.setTimeout(() => {
-        if (scrollModeRef.current) return;
-        if (pointers.size === 1 && traveled < 14) beginDrag();
-      }, dragLockRef.current ? 40 : 340);
+      if (pointers.size === 2) {
+        clearArm();
+        endDrag();
+        twoFingerMoved = 0;
+        pinchDistance = distance();
+        return;
+      }
     };
 
     const onMove = (event: PointerEvent) => {
@@ -221,12 +333,21 @@ export default function RemotePad() {
       const dy = event.clientY - previous.y;
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       traveled += Math.hypot(dx, dy);
-      glow(event.clientX, event.clientY, true);
-      if (pointers.size >= 2 || gesture === "scroll") {
-        if (pointers.size >= 2 && traveled > 10) gesture = "scroll";
-        if (gesture === "scroll" && pointers.size >= 2) {
-          send({ op: "scroll", dx: dx * scrollSensRef.current, dy: dy * scrollSensRef.current });
+      dot(event.pointerId, event.clientX, event.clientY);
+      if (pointers.size === 2 || gesture === "scroll" || gesture === "pinch") {
+        const nextDistance = distance();
+        if (pointers.size === 2 && Math.abs(nextDistance - pinchDistance) > 28) {
+          gesture = "pinch";
+          send({ op: "zoom", direction: nextDistance > pinchDistance ? "in" : "out" });
+          pinchDistance = nextDistance;
+          return;
         }
+        if (gesture === "pinch") return;
+        twoFingerMoved += Math.hypot(dx, dy);
+        if (twoFingerMoved > 10) {
+          gesture = "scroll";
+        }
+        if (gesture === "scroll") scrollBy(dx, dy);
         return;
       }
       if (scrollModeRef.current) {
@@ -240,7 +361,7 @@ export default function RemotePad() {
             hintRef.current = false;
             setHint(false);
           }
-          send({ op: "scroll", dx: dx * scrollSensRef.current, dy: dy * scrollSensRef.current });
+          scrollBy(dx, dy);
         }
         return;
       }
@@ -263,19 +384,23 @@ export default function RemotePad() {
     const finish = (event: PointerEvent) => {
       if (!pointers.has(event.pointerId)) return;
       pointers.delete(event.pointerId);
+      undot(event.pointerId);
       clearArm();
       if (pointers.size > 0) return;
-      glow(event.clientX, event.clientY, false);
       const tap = traveled < 14 && gesture === "pending";
       const fingers = maxPointers;
       const x = event.clientX;
       const y = event.clientY;
       const wasDragging = dragging;
+      const wasScrolling = gesture === "scroll" || gesture === "pan";
       traveled = 0;
       maxPointers = 0;
       gesture = "pending";
       if (wasDragging) {
         endDrag();
+        return;
+      }
+      if (wasScrolling) {
         return;
       }
       if (!tap) return;
@@ -299,6 +424,8 @@ export default function RemotePad() {
     el.addEventListener("contextmenu", block);
     return () => {
       clearArm();
+      dots.forEach((node) => node.remove());
+      dots.clear();
       if (dragging) send({ op: "up", button: "left" });
       el.removeEventListener("pointerdown", onDown);
       el.removeEventListener("pointermove", onMove);
@@ -345,6 +472,74 @@ export default function RemotePad() {
     setScrollMode((value) => !value);
   }
 
+  function notify(text: string) {
+    window.clearTimeout(toastTimer.current);
+    setToast(text);
+    toastTimer.current = window.setTimeout(() => setToast(""), 2200);
+  }
+
+  function sendPasted(text: string) {
+    if (!text) {
+      notify("Nothing to send");
+      return;
+    }
+    send({ op: "clipboard", action: "write", text: text.slice(0, 30000) });
+    setPasteOpen(false);
+    notify("Sent to Mac clipboard");
+  }
+
+  async function sendPhoneClipboard() {
+    // Without HTTPS the async clipboard API is missing; fall back to a paste box
+    // the user can long-press into.
+    if (!window.isSecureContext || !navigator.clipboard?.readText) {
+      setPasteOpen(true);
+      return;
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) {
+        notify("iPhone clipboard is empty");
+        return;
+      }
+      sendPasted(text);
+    } catch {
+      setPasteOpen(true);
+    }
+  }
+
+  function copyMacClipboard() {
+    // Mac clipboard text is already pushed to the phone, so copy it synchronously
+    // inside the tap; iOS rejects copies that happen after an async wait.
+    const text = macClipboard?.text;
+    if (!text) {
+      send({ op: "clipboard", action: "read" });
+      notify("Mac clipboard is empty");
+      return;
+    }
+    const fallback = () => {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.cssText = "position:fixed;top:0;left:0;opacity:0;font-size:16px;-webkit-user-select:text;user-select:text";
+      document.body.appendChild(area);
+      area.focus();
+      area.setSelectionRange(0, text.length);
+      let copied = false;
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
+      area.remove();
+      notify(copied ? "Copied from Mac" : "Couldn't copy from Mac");
+    };
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => notify("Copied from Mac"), fallback);
+    } else {
+      fallback();
+    }
+  }
+
   function focusApp(id: string) {
     setDesk((current) => {
       if (!current) return current;
@@ -362,7 +557,10 @@ export default function RemotePad() {
 
   useEffect(() => {
     if (!pendingQuit) return;
-    if (!desk?.apps.some((app) => app.id === pendingQuit.id)) setPendingQuit(null);
+    if (!desk?.apps.some((app) => app.id === pendingQuit.id)) {
+      const timer = window.setTimeout(() => setPendingQuit(null), 0);
+      return () => window.clearTimeout(timer);
+    }
   }, [desk, pendingQuit]);
 
   function quitApp(id: string) {
@@ -393,6 +591,28 @@ export default function RemotePad() {
       };
     });
     send({ op: "tab", browser: desk.browser, index, count: desk.tabCount || desk.tabs.length });
+  }
+
+  const shownVolume = draftVolume ?? volume ?? 50;
+
+  function changeVolume(value: number) {
+    window.clearTimeout(volumeRelease.current);
+    setDraftVolume(value);
+    setVolume(value);
+    const wait = 60 - (Date.now() - volumeSentAt.current);
+    window.clearTimeout(volumeTimer.current);
+    const flush = () => {
+      volumeSentAt.current = Date.now();
+      send({ op: "media", action: "volume", value: latestVolume.current });
+    };
+    latestVolume.current = value;
+    if (wait <= 0) flush();
+    else volumeTimer.current = window.setTimeout(flush, wait);
+  }
+
+  function endVolumeDrag() {
+    window.clearTimeout(volumeRelease.current);
+    volumeRelease.current = window.setTimeout(() => setDraftVolume(null), 500);
   }
 
   function toggleMod(name: keyof Mods) {
@@ -451,12 +671,19 @@ export default function RemotePad() {
               data-low={!battery.charging && battery.percent <= 20 ? "true" : "false"}
               aria-label={`Mac battery ${battery.percent} percent${battery.charging ? ", charging" : ""}`}
             >
+              <BatteryIcon percent={battery.percent} charging={battery.charging} />
               {battery.percent}%
             </span>
           ) : null}
           {session ? (
-            <button type="button" className="text-button" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen}>
-              {settingsOpen ? "Close" : "Settings"}
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={settingsOpen ? "Close settings" : "Settings"}
+              onClick={() => setSettingsOpen((open) => !open)}
+              aria-expanded={settingsOpen}
+            >
+              {settingsOpen ? <X /> : <Settings />}
             </button>
           ) : null}
         </div>
@@ -490,12 +717,29 @@ export default function RemotePad() {
             ) : null}
           </div>
         )}
+        {toast ? (
+          <div className="toast" role="status">
+            <Check />
+            {toast}
+          </div>
+        ) : null}
+        {pasteOpen ? (
+          <section className="sheet">
+            <h2>Send to Mac</h2>
+            <textarea ref={pasteRef} className="paste-box" autoFocus placeholder="Long-press here and tap Paste" />
+            <div className="sheet-actions">
+              <button type="button" className="primary" onClick={() => sendPasted(pasteRef.current?.value ?? "")}>Send</button>
+              <button type="button" onClick={() => setPasteOpen(false)}>Cancel</button>
+            </div>
+          </section>
+        ) : null}
         {settingsOpen && session ? (
           <section className="sheet" data-scroll>
             <h2>Settings</h2>
             <ConnectionFields agentUrl={agentUrl} token={token} onUrl={setAgentUrl} onToken={setToken} />
             <Slider label="Pointer" value={sens} min={0.4} max={4} step={0.1} onChange={setSens} />
             <Slider label="Scroll" value={scrollSens} min={0.5} max={8} step={0.1} onChange={setScrollSens} />
+            <p className="fine">Pinch zooms. The grid button opens Mission Control (Control + Up Arrow).</p>
             <div className="sheet-actions">
               <button type="button" className="primary" onClick={() => connect()}>Reconnect</button>
               <button type="button" onClick={() => { setSession(null); setSettingsOpen(false); }}>Disconnect</button>
@@ -507,12 +751,13 @@ export default function RemotePad() {
       {session ? (
         <footer className="remote-foot">
           <div className="remote-row mod-row">
-            <PressButton label="Command" pressed={mods.cmd} onPress={() => toggleMod("cmd")}>⌘</PressButton>
-            <PressButton label="Option" pressed={mods.alt} onPress={() => toggleMod("alt")}>⌥</PressButton>
-            <PressButton label="Control" pressed={mods.ctrl} onPress={() => toggleMod("ctrl")}>⌃</PressButton>
-            <PressButton label="Shift" pressed={mods.shift} onPress={() => toggleMod("shift")}>⇧</PressButton>
+            <PressButton label="Command" pressed={mods.cmd} onPress={() => toggleMod("cmd")}><Command /></PressButton>
+            <PressButton label="Option" pressed={mods.alt} onPress={() => toggleMod("alt")}><Option /></PressButton>
+            <PressButton label="Control" pressed={mods.ctrl} onPress={() => toggleMod("ctrl")}><ChevronUp /></PressButton>
+            <PressButton label="Shift" pressed={mods.shift} onPress={() => toggleMod("shift")}><ArrowBigUp /></PressButton>
             <button
               type="button"
+              aria-label="Keyboard"
               data-keyboard-toggle
               data-on={keyboard ? "true" : "false"}
               onClick={() => {
@@ -522,43 +767,61 @@ export default function RemotePad() {
                 else input.focus();
               }}
             >
-              Keyboard
+              <Keyboard />
             </button>
+            <PressButton label="Send iPhone clipboard to Mac" onPress={() => void sendPhoneClipboard()}><ClipboardPaste /></PressButton>
+            <PressButton label="Copy Mac clipboard to iPhone" onPress={copyMacClipboard}><ClipboardCopy /></PressButton>
           </div>
           <div className="remote-row">
-            <PressButton label="Left arrow" repeat onPress={() => tapKey("left")}>←</PressButton>
-            <PressButton label="Up arrow" repeat onPress={() => tapKey("up")}>↑</PressButton>
-            <PressButton label="Down arrow" repeat onPress={() => tapKey("down")}>↓</PressButton>
-            <PressButton label="Right arrow" repeat onPress={() => tapKey("right")}>→</PressButton>
-            <PressButton label="Escape" onPress={() => tapKey("escape")}>esc</PressButton>
-            <PressButton label="Delete" repeat onPress={() => tapKey("delete")}>⌫</PressButton>
+            <PressButton label="Left arrow" repeat onPress={() => tapKey("left")}><ArrowLeft /></PressButton>
+            <PressButton label="Up arrow" repeat onPress={() => tapKey("up")}><ArrowUp /></PressButton>
+            <PressButton label="Down arrow" repeat onPress={() => tapKey("down")}><ArrowDown /></PressButton>
+            <PressButton label="Right arrow" repeat onPress={() => tapKey("right")}><ArrowRight /></PressButton>
+            <PressButton label="Delete" repeat onPress={() => tapKey("delete")}><Delete /></PressButton>
           </div>
           <div className="remote-row click-row">
-            <PressButton label="Left click" onPress={() => send({ op: "click", button: "left", count: 1 })}>Click</PressButton>
-            <PressButton label="Right click" onPress={() => send({ op: "click", button: "right", count: 1 })}>Right</PressButton>
-            <PressButton label="Drag lock" pressed={dragLock} onPress={() => setDragLock((value) => !value)}>Drag</PressButton>
-            <PressButton label="One-finger scroll" pressed={scrollMode} onPress={toggleScrollMode}>Scroll</PressButton>
+            <PressButton label="Left click" onPress={() => send({ op: "click", button: "left", count: 1 })}><MousePointerClick /></PressButton>
+            <PressButton label="Right click" onPress={() => send({ op: "click", button: "right", count: 1 })}><SquareMenu /></PressButton>
+            <PressButton label="Drag lock" pressed={dragLock} onPress={() => setDragLock((value) => !value)}><Grab /></PressButton>
+            <PressButton label="One-finger scroll" pressed={scrollMode} onPress={toggleScrollMode}><ArrowUpDown /></PressButton>
+            <PressButton label="Mission Control" onPress={() => send({ op: "workspace", action: "mission-control" })}><LayoutGrid /></PressButton>
+            <PressButton label="Page up" onPress={() => tapPlain("space", true)}><ChevronsUp /></PressButton>
+            <PressButton label="Page down" onPress={() => tapPlain("space", false)}><ChevronsDown /></PressButton>
+            <PressButton label="Full screen" onPress={() => send({ op: "fullscreen" })}><Maximize /></PressButton>
           </div>
-          <div className="remote-row page-row">
-            <PressButton label="Page up" onPress={() => tapPlain("space", true)}>
-              <span>Page up</span>
-              <small>shift space</small>
-            </PressButton>
-            <PressButton label="Full screen" onPress={() => send({ op: "fullscreen" })}>
-              <span>Full screen</span>
-              <small>ctrl ⌘ F</small>
-            </PressButton>
-            <PressButton label="Page down" onPress={() => tapPlain("space", false)}>
-              <span>Page down</span>
-              <small>space</small>
-            </PressButton>
-          </div>
+          {connected ? (
+            <section className="media-row" aria-label="Media controls">
+              <PressButton label="Play or pause" onPress={() => {
+                const next = !(playOverride ?? playing ?? false);
+                setPlayOverride(next);
+                window.clearTimeout(playTimer.current);
+                playTimer.current = window.setTimeout(() => setPlayOverride(null), 2500);
+                send({ op: "media", action: "toggle" });
+              }}>
+                {playOverride ?? playing ?? false ? <Pause /> : <Play />}
+              </PressButton>
+              <label>
+                <VolumeIcon level={shownVolume} />
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={shownVolume}
+                  onChange={(event) => changeVolume(Number(event.target.value))}
+                  onPointerUp={endVolumeDrag}
+                  onPointerCancel={endVolumeDrag}
+                  onBlur={endVolumeDrag}
+                  aria-label="Mac volume"
+                />
+              </label>
+            </section>
+          ) : null}
           {desk?.browser ? (
             <div className="remote-row browse-row">
-              <PressButton label="Back" onPress={() => send({ op: "browse", action: "back" })}>Back</PressButton>
-              <PressButton label="Forward" onPress={() => send({ op: "browse", action: "forward" })}>Forward</PressButton>
-              <PressButton label="Reload" onPress={() => send({ op: "browse", action: "reload" })}>Reload</PressButton>
-              <PressButton label="New tab" onPress={() => send({ op: "browse", action: "newtab" })}>New tab</PressButton>
+              <PressButton label="Back" onPress={() => send({ op: "browse", action: "back" })}><ChevronLeft /></PressButton>
+              <PressButton label="Forward" onPress={() => send({ op: "browse", action: "forward" })}><ChevronRight /></PressButton>
+              <PressButton label="Reload" onPress={() => send({ op: "browse", action: "reload" })}><RotateCw /></PressButton>
+              <PressButton label="New tab" onPress={() => send({ op: "browse", action: "newtab" })}><Plus /></PressButton>
             </div>
           ) : null}
           {desk?.browser && (desk.tabs.length > 0 || desk.tabError) ? (
@@ -594,10 +857,11 @@ export default function RemotePad() {
             </div>
           ) : null}
           {desk && desk.apps.length > 0 ? (
-            <div className="dock" data-scroll aria-label="Open apps">
+            <div className="dock" data-scroll aria-label="Open apps" ref={dockRef}>
               {desk.apps.map((app) => (
                 <DockButton
                   key={app.id}
+                  id={app.id}
                   name={app.name}
                   icon={app.icon || ""}
                   active={app.id === desk.front}
@@ -750,12 +1014,14 @@ function Slider({
 }
 
 function DockButton({
+  id,
   name,
   icon,
   active,
   onOpen,
   onAskQuit,
 }: {
+  id: string;
   name: string;
   icon: string;
   active: boolean;
@@ -787,6 +1053,7 @@ function DockButton({
   return (
     <button
       type="button"
+      data-app-id={id}
       data-on={active ? "true" : "false"}
       data-holding={holding ? "true" : "false"}
       aria-label={holding ? `Force quit ${name}` : name}
@@ -819,10 +1086,21 @@ function DockButton({
         onOpen();
       }}
     >
+      {/* eslint-disable-next-line @next/next/no-img-element -- These are runtime data URLs from the local Mac, not network images. */}
       {icon ? <img src={`data:image/png;base64,${icon}`} alt="" draggable={false} /> : <i>{name.slice(0, 1)}</i>}
       <span>{holding ? "Quit?" : name}</span>
     </button>
   );
+}
+
+function VolumeIcon({ level }: { level: number }) {
+  const Glyph: LucideIcon = level === 0 ? VolumeX : level < 50 ? Volume1 : Volume2;
+  return <Glyph className="vol-icon" aria-hidden="true" />;
+}
+
+function BatteryIcon({ percent, charging }: { percent: number; charging: boolean }) {
+  const Glyph: LucideIcon = charging ? BatteryCharging : percent <= 20 ? BatteryLow : BatteryFull;
+  return <Glyph aria-hidden="true" />;
 }
 
 function PressButton({

@@ -9,11 +9,11 @@ const TAILSCALE_BINS = [
   "tailscale",
 ];
 
-function run(bin, args) {
+function run(bin, args, timeout = 2000) {
   try {
     return execFileSync(bin, args, {
       encoding: "utf8",
-      timeout: 2000,
+      timeout,
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
@@ -61,8 +61,26 @@ export function tailscaleDnsName() {
   }
 }
 
+export const HTTPS_AGENT_PORT = 8443;
+let httpsHost = "";
+
+// Serve the web page on :443 and the agent on :8443, both as HTTPS inside the tailnet,
+// so the phone gets a secure context (clipboard API) and wss:// for the websocket.
+export function enableTailscaleHttps(webPort, agentPort) {
+  const bin = tailscaleBin();
+  const dns = tailscaleDnsName();
+  if (!bin || !dns) return "";
+  run(bin, ["serve", "--bg", "--https=443", `http://127.0.0.1:${webPort}`], 20000);
+  run(bin, ["serve", "--bg", `--https=${HTTPS_AGENT_PORT}`, `http://127.0.0.1:${agentPort}`], 20000);
+  const status = run(bin, ["serve", "status"]);
+  httpsHost = status.includes(`${dns}:${HTTPS_AGENT_PORT}`) ? dns : "";
+  if (!httpsHost) console.warn("Tailscale Serve is not on; falling back to http. Run the tailscale serve commands from the README.");
+  return httpsHost;
+}
+
 export function pageOrigins(port) {
   const origins = [];
+  if (httpsHost) origins.push(`https://${httpsHost}`);
   for (const ip of tailscaleIPv4s()) origins.push(`http://${ip}:${port}`);
   const dns = tailscaleDnsName();
   if (dns) origins.push(`http://${dns}:${port}`);

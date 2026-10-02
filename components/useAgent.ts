@@ -11,6 +11,9 @@ export function useAgent(options: { url: string; token: string; active: boolean;
   const [trusted, setTrusted] = useState<boolean | null>(null);
   const [rtt, setRtt] = useState<number | null>(null);
   const [battery, setBattery] = useState<{ percent: number; charging: boolean } | null>(null);
+  const [volume, setVolume] = useState<number | null>(null);
+  const [playing, setPlaying] = useState<boolean | null>(null);
+  const [macClipboard, setMacClipboard] = useState<{ text: string; truncated: boolean } | null>(null);
   const [error, setError] = useState("");
   const [desk, setDesk] = useState<DeskSnapshot | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -62,6 +65,9 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     setTrusted(null);
     setRtt(null);
     setBattery(null);
+    setVolume(null);
+    setPlaying(null);
+    setMacClipboard(null);
     setError("");
   }
 
@@ -112,6 +118,10 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           percent?: number | null;
           charging?: boolean;
           battery?: { percent?: number; charging?: boolean } | null;
+          volume?: number | null;
+          playing?: boolean;
+          text?: string;
+          truncated?: boolean;
           front?: string;
           browser?: DeskSnapshot["browser"];
           apps?: DeskApp[];
@@ -151,6 +161,18 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           }
           return;
         }
+        if (message.type === "playing") {
+          setPlaying(Boolean(message.playing));
+          return;
+        }
+        if (message.type === "media") {
+          setVolume(typeof message.volume === "number" ? message.volume : null);
+          return;
+        }
+        if (message.type === "clipboard" && typeof message.text === "string") {
+          setMacClipboard({ text: message.text, truncated: Boolean(message.truncated) });
+          return;
+        }
         if (message.type === "hello") {
           attempt = 0;
           openRef.current = true;
@@ -159,6 +181,8 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           if (message.battery && typeof message.battery.percent === "number") {
             setBattery({ percent: message.battery.percent, charging: Boolean(message.battery.charging) });
           }
+          if (typeof message.volume === "number") setVolume(message.volume);
+          if (typeof message.playing === "boolean") setPlaying(message.playing);
           setError("");
           clearPing();
           pingTimer = window.setInterval(() => {
@@ -213,5 +237,5 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     };
   }, [active, generation, token, url]);
 
-  return { status, trusted, rtt, battery, error, send, desk, setDesk };
+  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, macClipboard, error, send, desk, setDesk };
 }

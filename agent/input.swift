@@ -1,8 +1,10 @@
 import ApplicationServices
+import AppKit
 import Carbon
 import CoreGraphics
 import Darwin
 import Foundation
+import IOKit.hidsystem
 
 let dryRun = CommandLine.arguments.contains("--dry-run")
 let source: CGEventSource? = CGEventSource(stateID: .hidSystemState)
@@ -19,6 +21,7 @@ let keyCodes: [String: CGKeyCode] = [
   "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
   "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
   "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
+  "-": 27, "=": 24,
   "o": 31, "u": 32, "i": 34, "p": 35, "return": 36, "l": 37, "j": 38, "k": 40,
   "n": 45, "m": 46, "tab": 48, "space": 49, "delete": 51, "escape": 53,
   "left": 123, "right": 124, "down": 125, "up": 126,
@@ -217,6 +220,28 @@ func postKey(name: String, down: Bool) {
   event.post(tap: .cghidEventTap)
 }
 
+func postMediaToggle() {
+  // System-defined media events reach the active player (including a playing
+  // browser video) instead of sending a space character to the focused page.
+  let keyDown = 0xA
+  let keyUp = 0xB
+  for state in [keyDown, keyUp] {
+    let data1 = (Int(NX_KEYTYPE_PLAY) << 16) | (state << 8)
+    guard let event = NSEvent.otherEvent(
+      with: .systemDefined,
+      location: .zero,
+      modifierFlags: [],
+      timestamp: 0,
+      windowNumber: 0,
+      context: nil,
+      subtype: Int16(NX_SUBTYPE_AUX_CONTROL_BUTTONS),
+      data1: data1,
+      data2: -1
+    ) else { return }
+    event.cgEvent?.post(tap: .cghidEventTap)
+  }
+}
+
 func layoutKey(for character: Character) -> (code: CGKeyCode, flags: CGEventFlags)? {
   let units = Array(String(character).utf16)
   guard units.count == 1 else { return nil }
@@ -264,9 +289,34 @@ func layoutKey(for character: Character) -> (code: CGKeyCode, flags: CGEventFlag
 }
 
 func postChord(_ code: CGKeyCode, _ extra: CGEventFlags) {
+  if dryRun {
+    log("DRY chord \(code)")
+    return
+  }
+  // Mission Control and other system shortcuts are more reliable when the
+  // modifier has a real down/up event, not just a flag attached to an arrow.
+  let modifiers: [(CGEventFlags, CGKeyCode)] = [
+    (.maskControl, 59),
+    (.maskAlternate, 58),
+    (.maskShift, 56),
+    (.maskCommand, 55),
+  ]
+  var active: CGEventFlags = []
+  for (flag, modifierCode) in modifiers where extra.contains(flag) {
+    active.insert(flag)
+    guard let event = CGEvent(keyboardEventSource: source, virtualKey: modifierCode, keyDown: true) else { return }
+    event.flags = active
+    event.post(tap: .cghidEventTap)
+  }
   for down in [true, false] {
     guard let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return }
     event.flags = extra
+    event.post(tap: .cghidEventTap)
+  }
+  for (flag, modifierCode) in modifiers.reversed() where extra.contains(flag) {
+    active.remove(flag)
+    guard let event = CGEvent(keyboardEventSource: source, virtualKey: modifierCode, keyDown: false) else { return }
+    event.flags = active
     event.post(tap: .cghidEventTap)
   }
 }
@@ -356,6 +406,8 @@ func handle(_ object: [String: Any]) {
     if !text.isEmpty && text.count <= 500 { postText(text) }
   case "flags":
     applyFlags(object)
+  case "media":
+    if string(object, "action") == "toggle" { postMediaToggle() }
   case "release":
     releaseHeld()
   default:

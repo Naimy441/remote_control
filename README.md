@@ -20,7 +20,7 @@ npm install
 npm run mac
 ```
 
-The terminal prints a link and a token. On the phone, turn Tailscale on and open that link. The token in the link signs you in once and is then stored on the phone.
+The terminal prints a link and a token. On the phone, turn Tailscale on and open that link (the `https://` one if it is listed; see [HTTPS over Tailscale](#https-over-tailscale)). The token in the link signs you in once and is then stored on the phone.
 
 The first run creates `agent/.token` (mode `600`). That file, the printed links in `agent/link.txt`, and the compiled helpers in `agent/bin/` stay on the machine. They are listed in `.gitignore`. To issue a new token, stop the agent, delete `agent/.token`, and start again. You can also set `AGENT_TOKEN` in the environment instead of using the file.
 
@@ -32,22 +32,64 @@ Firefox, Chrome, and Safari tab switching may also ask for Automation permission
 
 ## Gestures
 
-- One finger drag moves the pointer. Tap **Scroll** and the same drag scrolls instead. Tap it again to move the pointer.
-- Tap left-clicks. Tap twice for a double-click.
-- Hold still, then drag, to press and drag. The Drag button locks that on.
-- Two-finger drag scrolls. A two-finger tap right-clicks.
-- Page down sends Space. Page up sends Shift-Space. Full screen sends Control-Command-F.
-- Tap an open app to switch to it. Hold an app, then confirm, to force quit it.
-- When Safari, Chrome, or Firefox is in front, its tabs appear, and Back, Forward, Reload, and New tab show under the pad.
-- Keyboard opens the phone keyboard and types on the Mac. ⌘ ⌥ ⌃ ⇧ stay on until you tap them again, so ⌘ then C is copy.
+The pad tracks at most two fingers, each shown as a glowing ring.
 
-Pointer speed and scroll speed are under Settings.
+- One finger drag moves the pointer. Tap the scroll button and the same drag scrolls instead. Tap it again to move the pointer.
+- Tap left-clicks. Tap twice for a double-click.
+- Hold still, then drag, to press and drag. The grab button locks that on.
+- Two-finger drag scrolls. A two-finger tap right-clicks.
+- Pinch zooms the active app (Command-plus / Command-minus).
+
+## Buttons
+
+Everything under the pad is an icon. Left to right, top to bottom:
+
+| Row | Buttons |
+| --- | --- |
+| Keys | ⌘, ⌥, ⌃, ⇧ (stay on until tapped again, so ⌘ then C is copy), keyboard, send iPhone clipboard to Mac, copy Mac clipboard to iPhone |
+| Arrows | ← ↑ ↓ → and delete. Hold to repeat. |
+| Mouse | Left click, right click, drag lock, one-finger scroll, Mission Control, page up (Shift-Space), page down (Space), full screen (Control-Command-F) |
+| Media | Play/pause and a volume slider |
+| Browser | Back, forward, reload, new tab. Shown when Safari, Chrome, or Firefox is in front. |
+
+Tap an app in the dock to switch to it. Hold an app, then confirm, to force quit it. New apps animate in and the dock slides when the order changes. When a browser is in front, its tabs appear above the dock. The gear at the top opens connection, pointer speed, and scroll speed settings.
+
+Mission Control runs `open -a "Mission Control"` on the Mac, which works even when the Control-Up keyboard shortcut is not set up.
+
+## Clipboard and media
+
+- **Copy from Mac:** the agent pushes the Mac's text clipboard to the phone, and one tap copies it to the iPhone clipboard.
+- **Send to Mac:** reads the iPhone clipboard and writes it to the Mac. iOS shows its own Paste bubble when a page reads the clipboard; that cannot be skipped. Without HTTPS the browser blocks clipboard reading, so a small paste box opens instead: long-press, Paste, Send.
+
+Clipboard data stays on the authenticated connection and is limited to 30,000 characters. A toast confirms each action.
+
+The play/pause button sends the macOS system media command. Its icon follows real playback: the agent checks every 1.5 seconds whether the Mac is producing audio (through `pmset -g assertions`) and the icon shows pause while sound is playing. This is system-wide audio, not a specific player, so a muted video does not count as playing. The volume slider sets the system output volume; updates are throttled on the phone and applied one at a time on the Mac.
 
 ## Tailscale
 
-Install Tailscale on the Mac and the phone, and sign both into the same tailnet. `npm run mac` listens on every interface, so the phone reaches it at the Mac’s Tailscale address. The token is what stops other machines on that network from driving the pointer.
+Install Tailscale on the Mac and the phone, and sign both into the same tailnet. `npm run mac` listens on every interface, so the phone reaches it at the Mac's Tailscale address. The token is what stops other machines on that network from driving the pointer. HTTPS encrypts the link, but it does not say who is allowed in, so the token stays.
 
-The agent listens on port 8787. The page listens on port 3000. Opening the printed link is enough; the page finds the agent on the same host.
+The agent listens on port 8787 and the page on port 3000.
+
+### HTTPS over Tailscale
+
+Plain `http://` pages cannot use the browser clipboard API, and an `https://` page can only open `wss://` sockets. So `npm run mac` and `npm run agent` run Tailscale Serve for you:
+
+- the page at `https://<your-mac>.<tailnet>.ts.net` (port 443)
+- the agent at `wss://<your-mac>.<tailnet>.ts.net:8443`
+
+One-time setup in the Tailscale admin console: turn on MagicDNS and HTTPS Certificates. Then open the printed `https://…/#t=TOKEN` link on the phone (add it to the Home Screen again, because it is a new origin). The agent address fills itself in on `.ts.net` pages.
+
+If Serve cannot start automatically (the Tailscale app's CLI sometimes refuses outside a terminal), run these once in Terminal. The CLI lives at `/Applications/Tailscale.app/Contents/MacOS/Tailscale` if `tailscale` is not on your PATH:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:3000
+tailscale serve --bg --https=8443 http://127.0.0.1:8787
+```
+
+Set `NO_TAILSCALE_HTTPS=1` to skip the automatic setup. The old `http://100.x.x.x:3000` link keeps working.
+
+Serve is not a speed feature. It adds a local proxy hop, which is negligible. Latency depends on whether the phone reaches the Mac directly or through a Tailscale relay (`tailscale status` shows `direct` or `relay`).
 
 ## Deploy the page to Vercel
 
@@ -57,10 +99,4 @@ Vercel can host the touch UI, but it cannot move the Mac. Deploy as usual:
 npx vercel
 ```
 
-On the Mac, keep the agent running (`npm run agent`). From the phone, the Vercel page is HTTPS, so the agent address has to be a secure websocket. Tailscale Serve can do that without exposing the Mac to the public internet:
-
-```bash
-tailscale serve --bg 8787
-```
-
-In the page, set the Mac agent to `wss://<your-mac>.<tailnet>.ts.net` and paste the token. For the lowest delay, skip Vercel and open the `http://100.x.x.x:3000` link printed on the Mac.
+Keep the agent running on the Mac with Serve on port 8443, then set the Mac agent in Settings to `wss://<your-mac>.<tailnet>.ts.net:8443` and paste the token. For the lowest delay, skip Vercel and open the link printed on the Mac.
