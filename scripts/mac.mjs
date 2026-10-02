@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatToken, tokenFile } from "../agent/token.mjs";
+import { ensureSigned, signBinary } from "../agent/sign.mjs";
 import { enableTailscaleHttps, pageOrigins } from "../agent/net.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -12,7 +13,7 @@ const agentPort = process.env.AGENT_PORT || "8787";
 const pidPath = path.join(root, "agent", "bin", "remote.pid");
 const menuSource = path.join(root, "agent", "menu.swift");
 const menuInfo = path.join(root, "agent", "menu-Info.plist");
-const menuApp = path.join(root, "agent", "bin", "RemoteMenu.app");
+const menuApp = path.join(root, "agent", "bin", "Remote Control.app");
 const menuBinary = path.join(menuApp, "Contents", "MacOS", "RemoteMenu");
 const menuPidPath = path.join(root, "agent", "bin", "menu.pid");
 
@@ -22,7 +23,13 @@ function start(args) {
   const child = spawn(process.execPath, args, {
     cwd: root,
     stdio: "inherit",
-    env: { ...process.env, WEB_PORT: webPort, AGENT_PORT: agentPort },
+    env: {
+      ...process.env,
+      // Started from the menu bar, PATH is bare and Next could not spawn its own node workers.
+      PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}`,
+      WEB_PORT: webPort,
+      AGENT_PORT: agentPort,
+    },
   });
   children.push(child);
   return child;
@@ -49,19 +56,18 @@ function pidAlive(file) {
 
 function openMenu() {
   try {
+    // Older builds called the app RemoteMenu; drop it so only "Remote Control" is left.
+    fs.rmSync(path.join(root, "agent", "bin", "RemoteMenu.app"), { recursive: true, force: true });
     fs.mkdirSync(path.dirname(menuBinary), { recursive: true });
     fs.copyFileSync(menuInfo, path.join(menuApp, "Contents", "Info.plist"));
     const sourceTime = fs.statSync(menuSource).mtimeMs;
     const binaryTime = fs.existsSync(menuBinary) ? fs.statSync(menuBinary).mtimeMs : 0;
     fs.writeFileSync(path.join(root, "agent", "bin", "node-path"), process.execPath);
+    if (binaryTime >= sourceTime) ensureSigned(menuApp, "local.remote-control.menu");
     if (binaryTime < sourceTime) {
       console.log("Compiling the menu bar control…");
       execFileSync("swiftc", ["-O", "-o", menuBinary, menuSource], { stdio: "inherit" });
-      try {
-        execFileSync("codesign", ["-s", "-", "--force", menuApp], { stdio: "ignore" });
-      } catch {
-        // An ad-hoc signature is optional. The letters still show without it.
-      }
+      signBinary(menuApp, "local.remote-control.menu");
       // A menu bar app from the old build is still running; replace it with the new one.
       try {
         const old = Number(fs.readFileSync(menuPidPath, "utf8").trim());

@@ -7,7 +7,9 @@
   <key>CFBundleIdentifier</key>
   <string>local.remote-control.menu</string>
   <key>CFBundleName</key>
-  <string>RC</string>
+  <string>Remote Control</string>
+  <key>CFBundleDisplayName</key>
+  <string>Remote Control</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSUIElement</key>

@@ -8,7 +8,8 @@
     "start": "next start -H 0.0.0.0",
     "lint": "eslint",
     "agent": "node agent/server.mjs",
-    "mac": "node scripts/mac.mjs"
+    "mac": "node scripts/mac.mjs",
+    "setup-signing": "node scripts/setup-signing.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.49.0",

@@ -478,7 +478,7 @@ if CommandLine.arguments.contains("--self-test") {
 let trusted = accessibilityTrusted()
 log("READY trusted=\(trusted ? "1" : "0")")
 if !trusted {
-  log("Allow RemoteInput in System Settings → Privacy & Security → Accessibility, then restart.")
+  log("Allow Remote Control (the app that started this, or your terminal app) in System Settings → Privacy & Security → Accessibility, then restart.")
   log(CommandLine.arguments[0])
 }
 

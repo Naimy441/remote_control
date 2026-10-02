@@ -9,7 +9,7 @@ This is meant for your own tailnet. Do not port-forward it, and do not put it on
 - A Mac with the Xcode command line tools (`swiftc` compiles the input helper, the app list, and the menu bar control)
 - Node.js 20 or newer
 - Tailscale on the Mac and on the phone, signed into the same tailnet
-- Accessibility permission for `RemoteInput` (asked for on first launch)
+- Accessibility permission for the app that launches RC: Remote Control from the menu bar, or your terminal app (asked for on first launch)
 
 ## Run it
 
@@ -26,7 +26,13 @@ The first run creates `agent/.token` (mode `600`). That file, the printed links 
 
 `RC` appears in the Mac menu bar, next to Wi-Fi and Control Center. Use it to start or stop, or to copy the phone link. Stopping from the menu quits this command. `RC` stays, so you can start again without opening Terminal. Remove from menu bar hides it; the next `npm run mac` puts it back.
 
-The first launch asks for Accessibility permission for `RemoteInput`. Allow it in System Settings → Privacy & Security → Accessibility. If the pointer still does not move, quit `npm run mac` and start it again. Recompiling `RemoteInput` can make macOS forget that permission, so allow it again if the pointer stops after an update.
+Accessibility permission is attributed to the app that launched RC, not to the helper itself. Started from the menu bar, that is **Remote Control** (the menu bar app); started with `npm run mac` in Terminal, it is **Terminal** (or iTerm, VS Code, and so on). Turn that app on in System Settings → Privacy & Security → Accessibility. The menu bar shows "Running, needs Accessibility" and an **Allow Accessibility for RC…** item until it is granted. If the pointer still does not move, quit RC and start it again.
+
+Only one entry is needed. If the list has stale RemoteInput or RemoteMenu entries from older builds, select them and press `−`, then add `agent/bin/Remote Control.app` with `+`.
+
+Helpers are signed with your Apple Development certificate when one is in your keychain (set `RC_SIGN_IDENTITY` to pick another), using fixed identifiers. macOS ties Accessibility, Automation and folder permissions to the signature, and an ad-hoc signature changes on every rebuild, so with a certificate each grant sticks. Without one it falls back to ad hoc and the prompts come back after each rebuild.
+
+No Apple certificate? Run `npm run setup-signing` once. It creates a self-signed code-signing certificate named `RC Local Signing` in your login keychain (macOS asks for your password to trust it), and the helpers use it automatically. Choose Always Allow if Keychain asks whether `codesign` may use the key. Each person who builds this on their own Mac does this on that Mac; permissions are per machine and certificates are not shared.
 
 Firefox, Chrome, and Safari tab switching may also ask for Automation permission under Privacy & Security → Automation.
 

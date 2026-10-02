@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { formatToken, loadToken, tokenMatches } from "./token.mjs";
+import { ensureSigned, signBinary } from "./sign.mjs";
 import { cachedFavicon, loadFavicons } from "./favicon.mjs";
 import { enableTailscaleHttps, pageOrigins } from "./net.mjs";
 import { activateTab, automationDenied, closeTab, browserKind, browserName, firefoxChords, listTabs } from "./tabs.mjs";
@@ -25,27 +26,25 @@ if (process.platform !== "darwin") {
 
 const token = loadToken(root);
 
-function compileBinary(source, binary, label) {
+function compileBinary(source, binary, label, identifier) {
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   const sourceTime = fs.statSync(source).mtimeMs;
   const binaryTime = fs.existsSync(binary) ? fs.statSync(binary).mtimeMs : 0;
-  if (binaryTime >= sourceTime) return binary;
+  if (binaryTime >= sourceTime) {
+    ensureSigned(binary, identifier);
+    return binary;
+  }
   console.log(`Compiling ${label}…`);
   execFileSync("swiftc", ["-O", "-o", binary, source], { stdio: "inherit" });
+  const kind = signBinary(binary, identifier);
+  if (kind === "ad-hoc") {
+    console.warn(`Signed ${label} ad hoc, so macOS may ask for permissions again after each rebuild. Sign in to Xcode for a stable signature.`);
+  }
   return binary;
 }
 
 function ensureBinary() {
-  const sourceTime = fs.statSync(sourcePath).mtimeMs;
-  const binaryTime = fs.existsSync(binaryPath) ? fs.statSync(binaryPath).mtimeMs : 0;
-  const binary = compileBinary(sourcePath, binaryPath, "the Mac input helper");
-  if (binaryTime >= sourceTime) return binary;
-  try {
-    execFileSync("codesign", ["-s", "-", "--force", binary], { stdio: "inherit" });
-  } catch {
-    console.warn("Could not sign RemoteInput. Accessibility permission may reset after each compile.");
-  }
-  return binary;
+  return compileBinary(sourcePath, binaryPath, "the Mac input helper", "local.remote-control.input");
 }
 
 function clamp(value, min, max) {
@@ -381,7 +380,7 @@ function rejectDeskWaiters(error) {
 }
 
 function startDesk() {
-  const binary = compileBinary(deskSourcePath, deskBinaryPath, "the app switcher");
+  const binary = compileBinary(deskSourcePath, deskBinaryPath, "the app switcher", "local.remote-control.desk");
   const child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
   desk = child;
   deskBuffer = "";

@@ -1,9 +1,10 @@
 import AppKit
+import ApplicationServices
 import Darwin
 
 // When macOS opens this app at login it passes no arguments and the working directory is "/".
-// The project root is then recovered from the bundle location (<root>/agent/bin/RemoteMenu.app).
-let bundleSuffix = "/agent/bin/RemoteMenu.app"
+// The project root is then recovered from the bundle location (<root>/agent/bin/Remote Control.app).
+let bundleSuffix = "/agent/bin/Remote Control.app"
 let bundleRoot: String? = Bundle.main.bundlePath.hasSuffix(bundleSuffix)
   ? String(Bundle.main.bundlePath.dropLast(bundleSuffix.count))
   : nil
@@ -108,9 +109,16 @@ final class MenuApp: NSObject, NSMenuDelegate {
     status?.button?.appearsDisabled = !running
     if menuOpen { return }
     menu.removeAllItems()
-    let state = NSMenuItem(title: running ? "Running" : "Stopped", action: nil, keyEquivalent: "")
+    let allowed = AXIsProcessTrusted()
+    let label = running ? (allowed ? "Running" : "Running, needs Accessibility") : "Stopped"
+    let state = NSMenuItem(title: label, action: nil, keyEquivalent: "")
     state.isEnabled = false
     menu.addItem(state)
+    if !allowed {
+      // macOS attributes the input helper's Accessibility check to the app that launched it,
+      // which is this menu bar app, so the permission has to be granted to "Remote Control".
+      menu.addItem(item("Allow Accessibility for RC…", #selector(askAccessibility)))
+    }
     menu.addItem(.separator())
     if running {
       menu.addItem(item("Stop", #selector(stopServer)))
@@ -139,8 +147,21 @@ final class MenuApp: NSObject, NSMenuDelegate {
     return entry
   }
 
+  @objc func askAccessibility() {
+    let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+    _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+      NSWorkspace.shared.open(url)
+    }
+  }
+
   @objc func startServer() {
     if serverPid() != nil { return }
+    if !AXIsProcessTrusted() {
+      askAccessibility()
+      flash("RC!", "Turn on Remote Control in Privacy & Security → Accessibility, then press Start again.")
+      return
+    }
     guard let nodePath = resolveNode() else {
       flash("RC!", "Could not find node. Run npm run mac once in Terminal.")
       return
