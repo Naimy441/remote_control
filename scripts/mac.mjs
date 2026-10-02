@@ -53,6 +53,7 @@ function openMenu() {
     fs.copyFileSync(menuInfo, path.join(menuApp, "Contents", "Info.plist"));
     const sourceTime = fs.statSync(menuSource).mtimeMs;
     const binaryTime = fs.existsSync(menuBinary) ? fs.statSync(menuBinary).mtimeMs : 0;
+    fs.writeFileSync(path.join(root, "agent", "bin", "node-path"), process.execPath);
     if (binaryTime < sourceTime) {
       console.log("Compiling the menu bar control…");
       execFileSync("swiftc", ["-O", "-o", menuBinary, menuSource], { stdio: "inherit" });
@@ -60,6 +61,14 @@ function openMenu() {
         execFileSync("codesign", ["-s", "-", "--force", menuApp], { stdio: "ignore" });
       } catch {
         // An ad-hoc signature is optional. The letters still show without it.
+      }
+      // A menu bar app from the old build is still running; replace it with the new one.
+      try {
+        const old = Number(fs.readFileSync(menuPidPath, "utf8").trim());
+        if (old) process.kill(old, "SIGTERM");
+        fs.rmSync(menuPidPath, { force: true });
+      } catch {
+        // Nothing was running.
       }
     }
     if (pidAlive(menuPidPath)) return;
