@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { DisplaySize, GyroTune } from "@/lib/gyro";
 import { normalizeToken, roundDelta, type AgentMessage, type DeskApp, type DeskSnapshot, type DeskTab } from "@/lib/remote";
 
 export type AgentStatus = "idle" | "connecting" | "open" | "denied" | "replaced" | "closed";
@@ -12,6 +13,8 @@ export function useAgent(options: { url: string; token: string; active: boolean;
   const [rtt, setRtt] = useState<number | null>(null);
   const [battery, setBattery] = useState<{ percent: number; charging: boolean } | null>(null);
   const [volume, setVolume] = useState<number | null>(null);
+  const [tune, setTune] = useState<GyroTune | null>(null);
+  const [display, setDisplay] = useState<DisplaySize | null>(null);
   const [playing, setPlaying] = useState<boolean | null>(null);
   const [macClipboard, setMacClipboard] = useState<{ text: string; truncated: boolean } | null>(null);
   const [error, setError] = useState("");
@@ -67,6 +70,8 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     setBattery(null);
     setVolume(null);
     setPlaying(null);
+    setTune(null);
+    setDisplay(null);
     setMacClipboard(null);
     setError("");
   }
@@ -120,6 +125,8 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           battery?: { percent?: number; charging?: boolean } | null;
           volume?: number | null;
           playing?: boolean;
+          tune?: GyroTune;
+          display?: DisplaySize | null;
           text?: string;
           truncated?: boolean;
           front?: string;
@@ -161,6 +168,14 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           }
           return;
         }
+        if (message.type === "tune" && message.tune) {
+          setTune(message.tune);
+          return;
+        }
+        if (message.type === "display" && message.display) {
+          setDisplay(message.display);
+          return;
+        }
         if (message.type === "playing") {
           setPlaying(Boolean(message.playing));
           return;
@@ -183,6 +198,8 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           }
           if (typeof message.volume === "number") setVolume(message.volume);
           if (typeof message.playing === "boolean") setPlaying(message.playing);
+          if (message.tune) setTune(message.tune);
+          if (message.display) setDisplay(message.display);
           setError("");
           clearPing();
           pingTimer = window.setInterval(() => {
@@ -237,5 +254,5 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     };
   }, [active, generation, token, url]);
 
-  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, macClipboard, error, send, desk, setDesk };
+  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, tune, display, macClipboard, error, send, desk, setDesk };
 }

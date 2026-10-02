@@ -1,3 +1,5 @@
+import type { GyroTune } from "@/lib/gyro";
+
 export type MouseButton = "left" | "right" | "center";
 
 export type AgentMessage =
@@ -12,6 +14,9 @@ export type AgentMessage =
   | { op: "quit"; id: string }
   | { op: "tab"; browser: BrowserKind; index: number; count: number }
   | { op: "fullscreen" }
+  | { op: "center" }
+  | { op: "tune"; tune: GyroTune }
+  | { op: "calib"; step: string; rows?: number[][]; data?: Record<string, unknown> }
   | { op: "browse"; action: "back" | "forward" | "reload" | "newtab" }
   | { op: "workspace"; action: "mission-control" | "left" | "right" }
   | { op: "zoom"; direction: "in" | "out" | "reset" }

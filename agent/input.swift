@@ -146,11 +146,36 @@ func place(_ point: CGPoint, type: CGEventType, button: CGMouseButton, clickStat
   event.post(tap: .cghidEventTap)
 }
 
+// Keep the tracked pointer on a display. macOS clamps the real cursor at the screen edge, but
+// this tracked position would keep growing past it during continuous motion (it only resyncs
+// after a pause), so leaving a corner meant first unwinding all the overshoot.
+func clampToDisplays(_ point: CGPoint) -> CGPoint {
+  var count: UInt32 = 0
+  var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+  guard CGGetActiveDisplayList(16, &ids, &count) == .success, count > 0 else { return point }
+  var best = point
+  var bestDistance = Double.infinity
+  for id in ids.prefix(Int(count)) {
+    let bounds = CGDisplayBounds(id)
+    let clamped = CGPoint(
+      x: min(max(point.x, bounds.minX), bounds.maxX - 1),
+      y: min(max(point.y, bounds.minY), bounds.maxY - 1)
+    )
+    let distance = hypot(clamped.x - point.x, clamped.y - point.y)
+    if distance < bestDistance {
+      bestDistance = distance
+      best = clamped
+    }
+  }
+  return best
+}
+
 func move(dx: Double, dy: Double) {
   guard dx.isFinite, dy.isFinite, dx != 0 || dy != 0 else { return }
   var point = syncedCursor()
   point.x += dx
   point.y += dy
+  point = clampToDisplays(point)
   if let held = heldButton {
     place(point, type: dragType(held), button: held)
   } else {
@@ -378,6 +403,11 @@ func handle(_ object: [String: Any]) {
   switch string(object, "op") {
   case "move":
     move(dx: number(object, "dx"), dy: number(object, "dy"))
+  case "center":
+    // Placed through the same path as moves so the tracked pointer stays in sync and
+    // later gyro moves start from the middle of the screen instead of the old position.
+    let bounds = CGDisplayBounds(CGMainDisplayID())
+    place(CGPoint(x: bounds.midX, y: bounds.midY), type: .mouseMoved, button: .left)
   case "down":
     mouseDown(button(named: string(object, "button")))
   case "up":

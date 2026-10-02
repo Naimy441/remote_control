@@ -551,3 +551,42 @@ button:focus-visible, input:focus-visible {
   font-size: 16px;
   resize: none;
 }
+
+.remote-pad[data-mode="gyro"] {
+  background:
+    radial-gradient(circle at 50% 40%, rgba(110, 160, 255, 0.1), transparent 55%),
+    linear-gradient(#1a1f2b, #14161b);
+  box-shadow: inset 0 0 0 1.5px rgba(110, 160, 255, 0.6), inset 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+
+.remote-pad[data-mode="gyro"] .touch-dot {
+  background: radial-gradient(circle, rgba(150, 190, 255, 0.75) 0%, rgba(110, 160, 255, 0.4) 55%, rgba(110, 160, 255, 0) 72%);
+  box-shadow: 0 0 0 2px rgba(150, 190, 255, 0.9), 0 0 28px rgba(110, 160, 255, 0.6);
+}
+
+.calib {
+  position: absolute;
+  z-index: 4;
+  inset: 2px 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  border-radius: 22px;
+  background: rgba(14, 15, 18, 0.94);
+  box-shadow: inset 0 0 0 1px var(--line);
+  text-align: center;
+}
+
+.calib h2 { margin: 0; font-size: 22px; font-weight: 560; text-transform: capitalize; }
+.calib p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.45; max-width: 320px; }
+.calib .primary { min-width: 160px; }
+.calib-step { font-size: 13px !important; letter-spacing: 0.04em; text-transform: uppercase; }
+.calib-note { color: #f0c7a2 !important; }
+.calib-icon { width: 64px; height: 64px; fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.calib-close { position: absolute; top: 8px; right: 8px; }
+.calib-close svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+
+.media-row[data-solo="true"] { grid-template-columns: minmax(0, 1fr); }

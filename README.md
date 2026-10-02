@@ -40,6 +40,16 @@ The pad tracks at most two fingers, each shown as a glowing ring.
 - Two-finger drag scrolls. A two-finger tap right-clicks.
 - Pinch zooms the active app (Command-plus / Command-minus).
 
+### Gyro mouse
+
+Tap the 3D-move icon at the top to move the pointer by turning or tilting the phone, and tap it again to stop. Turning follows the rotation around gravity and tilting follows the phone's pitch, so it works held flat or upright. The pad still works normally with a finger. Settings has a gyro sensitivity slider, a **Calibrate gyro** wizard, and a Reset button. iOS asks for Motion & Orientation access the first time, and that only works over HTTPS (see below).
+
+#### Calibrating the gyro
+
+Settings → Calibrate gyro walks through four steps: rotate right, left, up, then down, as far as is comfortable, tapping Start and Done around each. The wizard measures how many degrees you can comfortably turn each way and sets a separate pixels-per-degree gain per direction so each edge of the screen is reachable (this fixes corners that feel harder than others). It also detects reversed axes. Run it again whenever you change how you hold the phone.
+
+Tuning lives in `agent/tune.json` on the Mac (git-ignored), is sent to the phone on connect, and can be edited by hand: `right`, `left`, `up`, `down` (pixels per degree), `accelDiv` and `accelMax` (speed boost), `deadzone` (deg/s), `smooth` (0 to 1), `flipX`, `flipY`. Restart or reconnect to apply manual edits. Raw sensor samples and the fitted result for each run are logged to `agent/calibration/*.jsonl` so the numbers can be reviewed and tuned further.
+
 ## Buttons
 
 Everything under the pad is an icon. Left to right, top to bottom:

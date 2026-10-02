@@ -48,8 +48,10 @@ import {
   VolumeX,
   X,
   Check,
+  Move3d,
   type LucideIcon,
 } from "lucide-react";
+import { calibSteps, defaultTune, fitTune, MIN_PEAK, type CalibStep } from "@/lib/gyro";
 import { useAgent, type AgentStatus } from "@/components/useAgent";
 
 type Session = { url: string; token: string; generation: number };
@@ -66,6 +68,14 @@ export default function RemotePad() {
   const [mods, setMods] = useState<Mods>(emptyMods);
   const [dragLock, setDragLock] = useState(false);
   const [scrollMode, setScrollMode] = useState(false);
+  const [gyro, setGyro] = useState(false);
+  const [gyroSens, setGyroSens] = useState(1);
+  const [calib, setCalib] = useState<{
+    step: number;
+    phase: "ready" | "moving" | "done";
+    note: string;
+    peaks: Partial<Record<CalibStep, number>>;
+  } | null>(null);
   const [keyboard, setKeyboard] = useState(false);
   const [pendingQuit, setPendingQuit] = useState<{ id: string; name: string } | null>(null);
   const [hint, setHint] = useState(true);
@@ -77,6 +87,11 @@ export default function RemotePad() {
   const scrollSensRef = useRef(scrollSens);
   const dragLockRef = useRef(dragLock);
   const scrollModeRef = useRef(scrollMode);
+  const gyroRef = useRef(gyro);
+  const gyroSensRef = useRef(gyroSens);
+  const tuneRef = useRef(defaultTune);
+  const calibMode = useRef(false);
+  const calibAcc = useRef<{ x: number; y: number; peakX: number; peakY: number; rows: number[][]; flushed: number } | null>(null);
   const modsRef = useRef(mods);
   const hintRef = useRef(hint);
   const [draftVolume, setDraftVolume] = useState<number | null>(null);
@@ -85,6 +100,7 @@ export default function RemotePad() {
   const [toast, setToast] = useState("");
   const [playOverride, setPlayOverride] = useState<boolean | null>(null);
   const playTimer = useRef(0);
+  const settleUntil = useRef(0);
   const toastTimer = useRef(0);
   const [pasteOpen, setPasteOpen] = useState(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
@@ -101,11 +117,13 @@ export default function RemotePad() {
     scrollSensRef.current = scrollSens;
     dragLockRef.current = dragLock;
     scrollModeRef.current = scrollMode;
+    gyroRef.current = gyro;
+    gyroSensRef.current = gyroSens;
     modsRef.current = mods;
     hintRef.current = hint;
-  }, [dragLock, hint, mods, scrollMode, scrollSens, sens]);
+  }, [dragLock, gyro, gyroSens, hint, mods, scrollMode, scrollSens, sens]);
 
-  const { status, trusted, rtt, battery, volume, setVolume, playing, macClipboard, error, send, desk, setDesk } = useAgent({
+  const { status, trusted, rtt, battery, volume, setVolume, playing, tune: agentTune, display, macClipboard, error, send, desk, setDesk } = useAgent({
     url: session?.url ?? "",
     token: session?.token ?? "",
     active: session !== null,
@@ -142,6 +160,12 @@ export default function RemotePad() {
     }
     dockPos.current = next;
   }, [dockIds]);
+
+  const isPlaying = playOverride ?? playing ?? false;
+  const tune = agentTune ?? defaultTune;
+  useEffect(() => {
+    tuneRef.current = tune;
+  }, [tune]);
 
   function restoreSession(saved: {
     url: string;
@@ -197,7 +221,81 @@ export default function RemotePad() {
     localStorage.setItem("remote.sens", String(sens));
     localStorage.setItem("remote.scroll", String(scrollSens));
     localStorage.setItem("remote.scrollmode", scrollMode ? "1" : "0");
-  }, [booted, scrollMode, scrollSens, sens]);
+    localStorage.setItem("remote.gyro", String(gyroSens));
+  }, [booted, gyroSens, scrollMode, scrollSens, sens]);
+
+  useEffect(() => {
+    // Restored after hydration; the saved values only exist in localStorage.
+    const timer = window.setTimeout(() => {
+      const saved = Number(localStorage.getItem("remote.gyro"));
+      if (Number.isFinite(saved) && saved >= 0.3 && saved <= 3) setGyroSens(saved);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!gyro || !session) return;
+    // Rotation about the gravity axis is yaw, rotation about the phone's x axis is pitch,
+    // so the pointer follows where the phone points however it is held.
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    let last = 0;
+    let fx = 0;
+    let fy = 0;
+    const onMotion = (event: DeviceMotionEvent) => {
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      if (!dt) return;
+      const rate = event.rotationRate;
+      const grav = event.accelerationIncludingGravity;
+      if (!rate || !grav) return;
+      // iOS Safari reports rotationRate as (x, y, z) in (alpha, beta, gamma); the spec says (z, x, y).
+      const wx = (ios ? rate.alpha : rate.beta) ?? 0;
+      const wy = (ios ? rate.beta : rate.gamma) ?? 0;
+      const wz = (ios ? rate.gamma : rate.alpha) ?? 0;
+      const norm = Math.hypot(grav.x ?? 0, grav.y ?? 0, grav.z ?? 0) || 1;
+      const sign = ios ? -1 : 1;
+      const yaw = sign * (wx * (grav.x ?? 0) + wy * (grav.y ?? 0) + wz * (grav.z ?? 0)) / norm;
+      // Unflipped axes: turning right is +x, tipping the top down is +y.
+      const ux = -yaw;
+      const uy = -wx;
+      const acc = calibAcc.current;
+      if (acc) {
+        acc.x += ux * dt;
+        acc.y += uy * dt;
+        if (Math.abs(acc.x) > Math.abs(acc.peakX)) acc.peakX = acc.x;
+        if (Math.abs(acc.y) > Math.abs(acc.peakY)) acc.peakY = acc.y;
+        const r = (v: number) => Math.round(v * 100) / 100;
+        acc.rows.push([Math.round(now), r(wx), r(wy), r(wz), r(grav.x ?? 0), r(grav.y ?? 0), r(grav.z ?? 0), r(ux), r(uy)]);
+        if (acc.rows.length >= 24) {
+          send({ op: "calib", step: "samples", rows: acc.rows.splice(0) });
+        }
+        return;
+      }
+      if (calibMode.current) return;
+      if (now < settleUntil.current) {
+        // Ignore the jolt of tapping the gyro button so the pointer stays at the center.
+        fx = 0;
+        fy = 0;
+        return;
+      }
+      const t = tuneRef.current;
+      fx += ((t.flipX ? -ux : ux) - fx) * t.smooth;
+      fy += ((t.flipY ? -uy : uy) - fy) * t.smooth;
+      const speed = Math.hypot(fx, fy);
+      // Faster sweeps travel farther, so a small wrist flick still reaches every corner.
+      const boost = 1 + Math.min(speed / t.accelDiv, t.accelMax);
+      const quiet = (value: number) => (Math.abs(value) < t.deadzone ? 0 : value);
+      const qx = quiet(fx);
+      const qy = quiet(fy);
+      const scale = dt * gyroSensRef.current * boost;
+      const dx = qx * scale * (qx > 0 ? t.right : t.left);
+      const dy = qy * scale * (qy > 0 ? t.down : t.up);
+      if (dx || dy) send({ op: "move", dx, dy });
+    };
+    window.addEventListener("devicemotion", onMotion);
+    return () => window.removeEventListener("devicemotion", onMotion);
+  }, [gyro, send, session]);
 
   useEffect(() => {
     if (status !== "open") return;
@@ -464,8 +562,94 @@ export default function RemotePad() {
     setSettingsOpen(false);
   }
 
+  async function toggleGyro() {
+    if (gyro) {
+      setGyro(false);
+      return;
+    }
+    if (await enableGyro()) {
+      settleUntil.current = performance.now() + 700;
+      send({ op: "center" });
+    }
+  }
+
+  async function enableGyro() {
+    if (gyroRef.current) return true;
+    const motion = window.DeviceMotionEvent as unknown as { requestPermission?: () => Promise<string> } | undefined;
+    if (!motion) {
+      notify("This browser has no motion sensors");
+      return false;
+    }
+    if (typeof motion.requestPermission === "function") {
+      try {
+        if ((await motion.requestPermission()) !== "granted") {
+          notify("Allow Motion & Orientation access in Safari settings");
+          return false;
+        }
+      } catch {
+        notify("Motion access needs HTTPS and a tap");
+        return false;
+      }
+    }
+    setScrollMode(false);
+    setHint(true);
+    setGyro(true);
+    return true;
+  }
+
+  async function startCalibration() {
+    if (!display) {
+      notify("Restart the Mac agent so it reports the screen size");
+      return;
+    }
+    if (!(await enableGyro())) return;
+    setSettingsOpen(false);
+    calibMode.current = true;
+    settleUntil.current = performance.now() + 700;
+    send({ op: "center" });
+    send({ op: "calib", step: "begin", data: { display, tune: tuneRef.current, agent: navigator.userAgent } });
+    setCalib({ step: 0, phase: "ready", note: "", peaks: {} });
+  }
+
+  function cancelCalibration() {
+    calibAcc.current = null;
+    calibMode.current = false;
+    setCalib(null);
+  }
+
+  function beginCalibStep() {
+    calibAcc.current = { x: 0, y: 0, peakX: 0, peakY: 0, rows: [], flushed: 0 };
+    setCalib((c) => (c ? { ...c, phase: "moving", note: "" } : c));
+  }
+
+  function endCalibStep() {
+    const acc = calibAcc.current;
+    const current = calib;
+    if (!acc || !current || !display) return;
+    calibAcc.current = null;
+    if (acc.rows.length) send({ op: "calib", step: "samples", rows: acc.rows });
+    const name = calibSteps[current.step];
+    const peak = name === "right" || name === "left" ? acc.peakX : acc.peakY;
+    send({ op: "calib", step: "result", data: { name, peak } });
+    if (Math.abs(peak) < MIN_PEAK) {
+      setCalib({ ...current, phase: "ready", note: "That was too small. Rotate at least a hand-width further and try again." });
+      return;
+    }
+    const peaks = { ...current.peaks, [name]: peak };
+    if (current.step + 1 < calibSteps.length) {
+      setCalib({ step: current.step + 1, phase: "ready", note: "", peaks });
+      return;
+    }
+    const fitted = fitTune(tuneRef.current, display, peaks as Record<CalibStep, number>);
+    send({ op: "tune", tune: fitted });
+    send({ op: "calib", step: "fit", data: { peaks, tune: fitted } });
+    calibMode.current = false;
+    setCalib({ step: current.step, phase: "done", note: "", peaks });
+  }
+
   function toggleScrollMode() {
     if (!scrollMode) {
+      setGyro(false);
       setDragLock(false);
       setHint(true);
     }
@@ -679,6 +863,18 @@ export default function RemotePad() {
             <button
               type="button"
               className="icon-button"
+              aria-label="Gyro mouse"
+              aria-pressed={gyro}
+              data-on={gyro ? "true" : "false"}
+              onClick={() => void toggleGyro()}
+            >
+              <Move3d />
+            </button>
+          ) : null}
+          {session ? (
+            <button
+              type="button"
+              className="icon-button"
               aria-label={settingsOpen ? "Close settings" : "Settings"}
               onClick={() => setSettingsOpen((open) => !open)}
               aria-expanded={settingsOpen}
@@ -707,10 +903,12 @@ export default function RemotePad() {
             <p className="fine">Add this page to your Home Screen so it opens full screen. Page down sends the space bar.</p>
           </form>
         ) : (
-          <div className="remote-pad" ref={padRef} role="application" aria-label="Trackpad" data-mode={scrollMode ? "scroll" : "move"}>
+          <div className="remote-pad" ref={padRef} role="application" aria-label="Trackpad" data-mode={gyro ? "gyro" : scrollMode ? "scroll" : "move"}>
             {hint ? (
               <p className="hint">
-                {scrollMode
+                {gyro
+                  ? "Turn or tilt the phone to move the pointer. Tap to click."
+                  : scrollMode
                   ? "One finger scrolls. Tap still clicks."
                   : "Drag to move. Tap to click. Hold to drag. Two fingers scroll."}
               </p>
@@ -722,6 +920,41 @@ export default function RemotePad() {
             <Check />
             {toast}
           </div>
+        ) : null}
+        {calib ? (
+          <section className="calib" aria-label="Gyro calibration">
+            <button type="button" className="icon-button calib-close" aria-label="Cancel calibration" onClick={cancelCalibration}>
+              <X />
+            </button>
+            {calib.phase === "done" ? (
+              <>
+                <Check className="calib-icon" />
+                <h2>Calibrated</h2>
+                <p>
+                  Pixels per degree: right {tune.right.toFixed(0)}, left {tune.left.toFixed(0)}, up {tune.up.toFixed(0)}, down{" "}
+                  {tune.down.toFixed(0)}.
+                </p>
+                <button type="button" className="primary" onClick={cancelCalibration}>Done</button>
+              </>
+            ) : (
+              <>
+                <p className="calib-step">Step {calib.step + 1} of {calibSteps.length}</p>
+                <CalibArrow step={calibSteps[calib.step]} />
+                <h2>Rotate {calibSteps[calib.step]}</h2>
+                <p>
+                  {calib.phase === "ready"
+                    ? "Hold the phone naturally, pointing at the screen. Tap Start, rotate as far as feels comfortable, then tap Done."
+                    : "Rotate as far as is comfortable, then tap Done."}
+                </p>
+                {calib.note ? <p className="calib-note">{calib.note}</p> : null}
+                {calib.phase === "ready" ? (
+                  <button type="button" className="primary" onClick={beginCalibStep}>Start</button>
+                ) : (
+                  <button type="button" className="primary" onClick={endCalibStep}>Done</button>
+                )}
+              </>
+            )}
+          </section>
         ) : null}
         {pasteOpen ? (
           <section className="sheet">
@@ -739,6 +972,11 @@ export default function RemotePad() {
             <ConnectionFields agentUrl={agentUrl} token={token} onUrl={setAgentUrl} onToken={setToken} />
             <Slider label="Pointer" value={sens} min={0.4} max={4} step={0.1} onChange={setSens} />
             <Slider label="Scroll" value={scrollSens} min={0.5} max={8} step={0.1} onChange={setScrollSens} />
+            <Slider label="Gyro" value={gyroSens} min={0.3} max={3} step={0.1} onChange={setGyroSens} />
+            <div className="sheet-actions">
+              <button type="button" className="primary" onClick={() => void startCalibration()}>Calibrate gyro</button>
+              <button type="button" onClick={() => send({ op: "tune", tune: defaultTune })}>Reset</button>
+            </div>
             <p className="fine">Pinch zooms. The grid button opens Mission Control (Control + Up Arrow).</p>
             <div className="sheet-actions">
               <button type="button" className="primary" onClick={() => connect()}>Reconnect</button>
@@ -790,7 +1028,8 @@ export default function RemotePad() {
             <PressButton label="Full screen" onPress={() => send({ op: "fullscreen" })}><Maximize /></PressButton>
           </div>
           {connected ? (
-            <section className="media-row" aria-label="Media controls">
+            <section className="media-row" data-solo={isPlaying ? "false" : "true"} aria-label="Media controls">
+              {isPlaying ? (
               <PressButton label="Play or pause" onPress={() => {
                 const next = !(playOverride ?? playing ?? false);
                 setPlayOverride(next);
@@ -798,8 +1037,9 @@ export default function RemotePad() {
                 playTimer.current = window.setTimeout(() => setPlayOverride(null), 2500);
                 send({ op: "media", action: "toggle" });
               }}>
-                {playOverride ?? playing ?? false ? <Pause /> : <Play />}
+                {isPlaying ? <Pause /> : <Play />}
               </PressButton>
+              ) : null}
               <label>
                 <VolumeIcon level={shownVolume} />
                 <input
@@ -1091,6 +1331,11 @@ function DockButton({
       <span>{holding ? "Quit?" : name}</span>
     </button>
   );
+}
+
+function CalibArrow({ step }: { step: CalibStep }) {
+  const Glyph: LucideIcon = step === "right" ? ArrowRight : step === "left" ? ArrowLeft : step === "up" ? ArrowUp : ArrowDown;
+  return <Glyph className="calib-icon" aria-hidden="true" />;
 }
 
 function VolumeIcon({ level }: { level: number }) {

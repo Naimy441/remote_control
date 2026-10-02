@@ -95,6 +95,18 @@ function sanitize(message) {
       return { op: message.op, id: message.id };
     case "fullscreen":
       return { op: "fullscreen" };
+    case "center":
+      return { op: "center" };
+    case "tune":
+      return { op: "tune", tune: cleanTune(message.tune) };
+    case "calib": {
+      if (typeof message.step !== "string" || !/^[a-z0-9-]{1,24}$/.test(message.step)) return null;
+      const rows = Array.isArray(message.rows)
+        ? message.rows.slice(0, 200).map((row) => (Array.isArray(row) ? row.slice(0, 8).map(Number).filter(Number.isFinite) : []))
+        : undefined;
+      const data = message.data && JSON.stringify(message.data).length <= 4000 ? message.data : undefined;
+      return { op: "calib", step: message.step, rows, data };
+    }
     case "browse":
       if (message.action !== "back" && message.action !== "forward" && message.action !== "reload" && message.action !== "newtab") {
         return null;
@@ -151,6 +163,71 @@ let playing = false;
 let playingTimer = null;
 let clipboard = null;
 let clipboardTimer = null;
+let display = null;
+let calibFile = "";
+
+const tuneDefaults = {
+  right: 18, left: 18, up: 18, down: 18,
+  accelDiv: 40, accelMax: 3, deadzone: 0.6, smooth: 0.6,
+  flipX: false, flipY: false,
+};
+const tunePath = path.join(agentDir, "tune.json");
+const calibDir = path.join(agentDir, "calibration");
+
+function cleanTune(raw) {
+  const t = raw && typeof raw === "object" ? raw : {};
+  const num = (key, min, max) => {
+    const v = Number(t[key]);
+    return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : tuneDefaults[key];
+  };
+  return {
+    right: num("right", 2, 120), left: num("left", 2, 120), up: num("up", 2, 120), down: num("down", 2, 120),
+    accelDiv: num("accelDiv", 5, 400), accelMax: num("accelMax", 0, 8),
+    deadzone: num("deadzone", 0, 5), smooth: num("smooth", 0.05, 1),
+    flipX: Boolean(t.flipX), flipY: Boolean(t.flipY),
+  };
+}
+
+function loadTune() {
+  try {
+    return cleanTune(JSON.parse(fs.readFileSync(tunePath, "utf8")));
+  } catch {
+    return { ...tuneDefaults };
+  }
+}
+
+let tune = loadTune();
+
+function saveTune(next) {
+  tune = cleanTune(next);
+  fs.writeFileSync(tunePath, `${JSON.stringify(tune, null, 2)}\n`);
+  broadcast({ type: "tune", tune });
+}
+
+function readDisplay() {
+  const script =
+    'ObjC.import("CoreGraphics"); const b = $.CGDisplayBounds($.CGMainDisplayID()); Math.round(b.size.width) + "x" + Math.round(b.size.height)';
+  execFile("osascript", ["-l", "JavaScript", "-e", script], { timeout: 3000 }, (error, stdout) => {
+    if (error) return;
+    const [w, h] = String(stdout).trim().split("x").map(Number);
+    if (w > 0 && h > 0) {
+      display = { w, h };
+      broadcast({ type: "display", display });
+    }
+  });
+}
+
+function logCalibration(entry) {
+  try {
+    fs.mkdirSync(calibDir, { recursive: true });
+    if (entry.step === "begin" || !calibFile) {
+      calibFile = path.join(calibDir, `gyro-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
+    }
+    fs.appendFileSync(calibFile, `${JSON.stringify({ at: Date.now(), ...entry })}\n`);
+  } catch {
+    // Calibration logs are a convenience; never break input over them.
+  }
+}
 
 function broadcast(payload) {
   const data = JSON.stringify(payload);
@@ -158,7 +235,7 @@ function broadcast(payload) {
 }
 
 function helloPayload() {
-  return { type: "hello", trusted, battery, volume, playing };
+  return { type: "hello", trusted, battery, volume, playing, tune, display };
 }
 
 function parseBattery(text) {
@@ -634,6 +711,14 @@ wss.on("connection", (ws) => {
       void focusTab(clean);
       return;
     }
+    if (clean.op === "tune") {
+      saveTune(clean.tune);
+      return;
+    }
+    if (clean.op === "calib") {
+      logCalibration({ step: clean.step, rows: clean.rows, data: clean.data });
+      return;
+    }
     if (clean.op === "fullscreen") {
       sendChord("f", { cmd: true, ctrl: true });
       return;
@@ -720,6 +805,7 @@ if (origins.length) {
 }
 console.log("");
 
+readDisplay();
 startHelper();
 startDesk();
 watchSystemStats();
