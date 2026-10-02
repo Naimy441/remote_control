@@ -12,7 +12,7 @@ export type AgentMessage =
   | { op: "flags"; cmd: boolean; shift: boolean; alt: boolean; ctrl: boolean }
   | { op: "focus"; id: string }
   | { op: "quit"; id: string }
-  | { op: "tab"; browser: BrowserKind; index: number; count: number }
+  | { op: "tab" | "closetab"; browser: BrowserKind; index: number; count: number }
   | { op: "fullscreen" }
   | { op: "center" }
   | { op: "tune"; tune: GyroTune }
@@ -36,6 +36,7 @@ export type DeskTab = {
   index: number;
   title: string;
   active: boolean;
+  host?: string;
 };
 
 export type DeskSnapshot = {

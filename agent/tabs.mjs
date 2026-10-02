@@ -24,6 +24,15 @@ export function browserName(kind) {
   return "Google Chrome";
 }
 
+export function hostOf(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.hostname.replace(/^www\./, "") : "";
+  } catch {
+    return "";
+  }
+}
+
 function cleanTitle(value) {
   const title = String(value || "").replace(/\s+/g, " ").trim();
   return title.slice(0, 90);
@@ -145,7 +154,9 @@ function firefoxTabList(frontTitle) {
     const title = tabTitle(tab);
     const active = !marked && (frontTitle ? title === frontTitle : index + 1 === selectedIndex);
     if (active) marked = true;
-    return { index: index + 1, title, active };
+    const entries = Array.isArray(tab?.entries) ? tab.entries : [];
+    const entry = entries[Math.max(0, (tab?.index || 1) - 1)] || entries[entries.length - 1];
+    return { index: index + 1, title, active, host: hostOf(entry?.url) };
   });
   tabs.total = win.tabs.length;
   return tabs;
@@ -169,12 +180,13 @@ function parseRows(stdout) {
   const rows = stdout.split(record).filter(Boolean);
   const active = Number(rows.shift());
   return rows.slice(0, 40).map((row) => {
-    const [indexText, title] = row.split(field);
+    const [indexText, title, url] = row.split(field);
     const index = Number(indexText);
     return {
       index,
       title: cleanTitle(title) || "New tab",
       active: index === active,
+      host: hostOf(url),
     };
   }).filter((tab) => Number.isInteger(tab.index) && tab.index > 0);
 }
@@ -196,7 +208,7 @@ tell application "Google Chrome"
     set AppleScript's text item delimiters to " "
     set tabName to parts as text
     set AppleScript's text item delimiters to ""
-    set end of rows to (t as text) & fieldSep & tabName
+    set end of rows to (t as text) & fieldSep & tabName & fieldSep & (URL of tab t of front window)
   end repeat
   set AppleScript's text item delimiters to recordSep
   return (activeIndex as text) & recordSep & (rows as text)
@@ -217,7 +229,7 @@ tell application "Safari"
     set AppleScript's text item delimiters to " "
     set tabName to parts as text
     set AppleScript's text item delimiters to ""
-    set end of rows to (t as text) & fieldSep & tabName
+    set end of rows to (t as text) & fieldSep & tabName & fieldSep & (URL of tab t of front window)
   end repeat
   set AppleScript's text item delimiters to recordSep
   return (activeIndex as text) & recordSep & (rows as text)
@@ -235,6 +247,17 @@ end tell`,
 end tell`,
 };
 
+const closeScripts = {
+  chromium: (index) => `tell application "Google Chrome" to close tab ${index} of front window`,
+  safari: (index) => `tell application "Safari" to close tab ${index} of front window`,
+};
+
+export async function closeTab(kind, index) {
+  const source = closeScripts[kind]?.(index);
+  if (!source) return;
+  await runScript(source);
+}
+
 export async function listTabs(kind) {
   if (kind === "firefox") {
     const frontTitle = await firefoxFrontTitle();
@@ -251,11 +274,14 @@ export async function activateTab(kind, index) {
   await runScript(source);
 }
 
+// Firefox has no scripting API for tabs, so jump to the nearer end with Cmd+1 / Cmd+9 and step with
+// Cmd+Option+Arrow, which moves by position (Ctrl+Tab follows recently-used order by default).
 export function firefoxChords(index, count) {
   if (index <= 8) return [{ name: String(index), cmd: true }];
   if (index === count) return [{ name: "9", cmd: true }];
-  const chords = [{ name: "1", cmd: true }];
-  const steps = Math.min(index - 1, 24);
-  for (let n = 0; n < steps; n++) chords.push({ name: "tab", ctrl: true });
-  return chords;
+  const fromEnd = count - index;
+  if (fromEnd < index - 1) {
+    return [{ name: "9", cmd: true }, ...Array.from({ length: fromEnd }, () => ({ name: "left", cmd: true, alt: true }))];
+  }
+  return [{ name: "1", cmd: true }, ...Array.from({ length: index - 1 }, () => ({ name: "right", cmd: true, alt: true }))];
 }

@@ -13,6 +13,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
   const [rtt, setRtt] = useState<number | null>(null);
   const [battery, setBattery] = useState<{ percent: number; charging: boolean } | null>(null);
   const [volume, setVolume] = useState<number | null>(null);
+  const [tabIcons, setTabIcons] = useState<Record<string, string>>({});
   const [tune, setTune] = useState<GyroTune | null>(null);
   const [display, setDisplay] = useState<DisplaySize | null>(null);
   const [playing, setPlaying] = useState<boolean | null>(null);
@@ -72,6 +73,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     setPlaying(null);
     setTune(null);
     setDisplay(null);
+    setTabIcons({});
     setMacClipboard(null);
     setError("");
   }
@@ -126,6 +128,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           volume?: number | null;
           playing?: boolean;
           tune?: GyroTune;
+          tabIcons?: Record<string, string>;
           display?: DisplaySize | null;
           text?: string;
           truncated?: boolean;
@@ -142,9 +145,11 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           return;
         }
         if (message.type === "desk" && Array.isArray(message.apps)) {
+          const icons = message.tabIcons;
+          if (icons && Object.keys(icons).length) setTabIcons((current) => ({ ...current, ...icons }));
           const apps = message.apps;
           setDesk((current) => {
-            const icons = new Map((current?.apps ?? []).map((app) => [app.id, app.icon || ""]));
+            const known = new Map((current?.apps ?? []).map((app) => [app.id, app.icon || ""]));
             return {
               front: message.front || "",
               browser: message.browser || "",
@@ -154,7 +159,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
               apps: apps.map((app) => ({
                 id: app.id,
                 name: app.name,
-                icon: app.icon || icons.get(app.id) || "",
+                icon: app.icon || known.get(app.id) || "",
               })),
             };
           });
@@ -254,5 +259,5 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     };
   }, [active, generation, token, url]);
 
-  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, tune, display, macClipboard, error, send, desk, setDesk };
+  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, tune, display, tabIcons, macClipboard, error, send, desk, setDesk };
 }

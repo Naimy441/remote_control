@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   browserKind,
   defaultAgentUrl,
@@ -77,6 +77,7 @@ export default function RemotePad() {
     peaks: Partial<Record<CalibStep, number>>;
   } | null>(null);
   const [keyboard, setKeyboard] = useState(false);
+  const [pendingTab, setPendingTab] = useState<{ index: number; title: string } | null>(null);
   const [pendingQuit, setPendingQuit] = useState<{ id: string; name: string } | null>(null);
   const [hint, setHint] = useState(true);
 
@@ -116,14 +117,15 @@ export default function RemotePad() {
     sensRef.current = sens;
     scrollSensRef.current = scrollSens;
     dragLockRef.current = dragLock;
-    scrollModeRef.current = scrollMode;
+    // Gyro owns the pointer, so a one-finger drag scrolls instead.
+    scrollModeRef.current = scrollMode || gyro;
     gyroRef.current = gyro;
     gyroSensRef.current = gyroSens;
     modsRef.current = mods;
     hintRef.current = hint;
   }, [dragLock, gyro, gyroSens, hint, mods, scrollMode, scrollSens, sens]);
 
-  const { status, trusted, rtt, battery, volume, setVolume, playing, tune: agentTune, display, macClipboard, error, send, desk, setDesk } = useAgent({
+  const { status, trusted, rtt, battery, volume, setVolume, playing, tune: agentTune, display, tabIcons, macClipboard, error, send, desk, setDesk } = useAgent({
     url: session?.url ?? "",
     token: session?.token ?? "",
     active: session !== null,
@@ -389,8 +391,11 @@ export default function RemotePad() {
       node.style.transform = `translate(${x - rect.left}px, ${y - rect.top}px)`;
     };
     const undot = (id: number) => {
-      dots.get(id)?.remove();
+      const node = dots.get(id);
       dots.delete(id);
+      if (!node) return;
+      node.classList.add("out");
+      window.setTimeout(() => node.remove(), 220);
     };
 
     const onDown = (event: PointerEvent) => {
@@ -522,7 +527,7 @@ export default function RemotePad() {
     el.addEventListener("contextmenu", block);
     return () => {
       clearArm();
-      dots.forEach((node) => node.remove());
+      el.querySelectorAll(".touch-dot").forEach((node) => node.remove());
       dots.clear();
       if (dragging) send({ op: "up", button: "left" });
       el.removeEventListener("pointerdown", onDown);
@@ -799,6 +804,18 @@ export default function RemotePad() {
     volumeRelease.current = window.setTimeout(() => setDraftVolume(null), 500);
   }
 
+  function closeTab(index: number) {
+    if (!desk?.browser) return;
+    setDesk((current) => {
+      if (!current) return current;
+      const tabs = current.tabs
+        .filter((tab) => tab.index !== index)
+        .map((tab) => (tab.index > index ? { ...tab, index: tab.index - 1, key: `${current.browser}:${tab.index - 1}` } : tab));
+      return { ...current, tabs, tabCount: Math.max(0, current.tabCount - 1) };
+    });
+    send({ op: "closetab", browser: desk.browser, index, count: desk.tabCount || desk.tabs.length });
+  }
+
   function toggleMod(name: keyof Mods) {
     setMods((current) => ({ ...current, [name]: !current[name] }));
   }
@@ -835,6 +852,18 @@ export default function RemotePad() {
     }
     send({ op: "text", s: text });
   }
+
+  const toastPresence = usePresence(Boolean(toast));
+  const toastText = useLast(toast);
+  const calibPresence = usePresence(calib !== null, 260);
+  const calibView = useLast(calib);
+  const pastePresence = usePresence(pasteOpen);
+  const settingsPresence = usePresence(settingsOpen && session !== null);
+  const tabAsk = usePresence(pendingTab !== null);
+  const tabAskView = useLast(pendingTab);
+  const quitAsk = usePresence(pendingQuit !== null);
+  const quitAskView = useLast(pendingQuit);
+  const hintPresence = usePresence(hint, 400);
 
   const message = formError || error;
   const connected = status === "open";
@@ -904,10 +933,10 @@ export default function RemotePad() {
           </form>
         ) : (
           <div className="remote-pad" ref={padRef} role="application" aria-label="Trackpad" data-mode={gyro ? "gyro" : scrollMode ? "scroll" : "move"}>
-            {hint ? (
-              <p className="hint">
+            {hintPresence.mounted ? (
+              <p className="hint" data-state={hintPresence.state}>
                 {gyro
-                  ? "Turn or tilt the phone to move the pointer. Tap to click."
+                  ? "Turn or tilt the phone to move the pointer. Drag to scroll. Tap to click."
                   : scrollMode
                   ? "One finger scrolls. Tap still clicks."
                   : "Drag to move. Tap to click. Hold to drag. Two fingers scroll."}
@@ -915,18 +944,19 @@ export default function RemotePad() {
             ) : null}
           </div>
         )}
-        {toast ? (
-          <div className="toast" role="status">
+        {toastPresence.mounted ? (
+          <div className="toast" role="status" data-state={toastPresence.state}>
             <Check />
-            {toast}
+            {toastText}
           </div>
         ) : null}
-        {calib ? (
-          <section className="calib" aria-label="Gyro calibration">
+        {calibPresence.mounted && calibView ? (
+          <section className="calib" aria-label="Gyro calibration" data-state={calibPresence.state}>
             <button type="button" className="icon-button calib-close" aria-label="Cancel calibration" onClick={cancelCalibration}>
               <X />
             </button>
-            {calib.phase === "done" ? (
+            <div className="calib-body" key={`${calibView.step}-${calibView.phase}`}>
+            {calibView.phase === "done" ? (
               <>
                 <Check className="calib-icon" />
                 <h2>Calibrated</h2>
@@ -938,26 +968,27 @@ export default function RemotePad() {
               </>
             ) : (
               <>
-                <p className="calib-step">Step {calib.step + 1} of {calibSteps.length}</p>
-                <CalibArrow step={calibSteps[calib.step]} />
-                <h2>Rotate {calibSteps[calib.step]}</h2>
+                <p className="calib-step">Step {calibView.step + 1} of {calibSteps.length}</p>
+                <CalibArrow step={calibSteps[calibView.step]} />
+                <h2>Rotate {calibSteps[calibView.step]}</h2>
                 <p>
-                  {calib.phase === "ready"
+                  {calibView.phase === "ready"
                     ? "Hold the phone naturally, pointing at the screen. Tap Start, rotate as far as feels comfortable, then tap Done."
                     : "Rotate as far as is comfortable, then tap Done."}
                 </p>
-                {calib.note ? <p className="calib-note">{calib.note}</p> : null}
-                {calib.phase === "ready" ? (
+                {calibView.note ? <p className="calib-note">{calibView.note}</p> : null}
+                {calibView.phase === "ready" ? (
                   <button type="button" className="primary" onClick={beginCalibStep}>Start</button>
                 ) : (
                   <button type="button" className="primary" onClick={endCalibStep}>Done</button>
                 )}
               </>
             )}
+            </div>
           </section>
         ) : null}
-        {pasteOpen ? (
-          <section className="sheet">
+        {pastePresence.mounted ? (
+          <section className="sheet" data-state={pastePresence.state}>
             <h2>Send to Mac</h2>
             <textarea ref={pasteRef} className="paste-box" autoFocus placeholder="Long-press here and tap Paste" />
             <div className="sheet-actions">
@@ -966,8 +997,8 @@ export default function RemotePad() {
             </div>
           </section>
         ) : null}
-        {settingsOpen && session ? (
-          <section className="sheet" data-scroll>
+        {settingsPresence.mounted ? (
+          <section className="sheet" data-scroll data-state={settingsPresence.state}>
             <h2>Settings</h2>
             <ConnectionFields agentUrl={agentUrl} token={token} onUrl={setAgentUrl} onToken={setToken} />
             <Slider label="Pointer" value={sens} min={0.4} max={4} step={0.1} onChange={setSens} />
@@ -985,6 +1016,79 @@ export default function RemotePad() {
           </section>
         ) : null}
       </main>
+
+      {session ? (
+        <div className="remote-base">
+          {desk?.browser && (desk.tabs.length > 0 || desk.tabError) ? (
+            <div className="tab-row" data-scroll>
+              {desk.tabError ? <p className="tab-note">{desk.tabError}</p> : null}
+              {desk.tabs.map((tab) => {
+                const shared = tab.host ? desk.tabs.filter((other) => other.host === tab.host).length : 0;
+                const icon = tab.host && shared === 1 ? tabIcons[tab.host] ?? "" : "";
+                return (
+                  <TabButton
+                    key={tab.key}
+                    title={tab.title}
+                    icon={icon}
+                    active={tab.active}
+                    onOpen={() => focusTab(tab.index)}
+                    onAskClose={() => setPendingTab({ index: tab.index, title: tab.title })}
+                  />
+                );
+              })}
+            </div>
+          ) : null}
+          {tabAsk.mounted && tabAskView ? (
+            <div className="quit-confirm" data-state={tabAsk.state}>
+              <p>Close tab “{tabAskView.title}”?</p>
+              <button type="button" onClick={() => setPendingTab(null)}>Cancel</button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  const index = tabAskView.index;
+                  setPendingTab(null);
+                  closeTab(index);
+                }}
+              >
+                Close
+              </button>
+            </div>
+          ) : null}
+          {quitAsk.mounted && quitAskView ? (
+            <div className="quit-confirm" data-state={quitAsk.state}>
+              <p>Force quit {quitAskView.name}?</p>
+              <button type="button" onClick={() => setPendingQuit(null)}>Cancel</button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  const id = quitAskView.id;
+                  setPendingQuit(null);
+                  quitApp(id);
+                }}
+              >
+                Force quit
+              </button>
+            </div>
+          ) : null}
+          {desk && desk.apps.length > 0 ? (
+            <div className="dock" data-scroll aria-label="Open apps" ref={dockRef}>
+              {desk.apps.map((app) => (
+                <DockButton
+                  key={app.id}
+                  id={app.id}
+                  name={app.name}
+                  icon={app.icon || ""}
+                  active={app.id === desk.front}
+                  onOpen={() => focusApp(app.id)}
+                  onAskQuit={() => setPendingQuit({ id: app.id, name: app.name })}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {session ? (
         <footer className="remote-foot">
@@ -1028,18 +1132,18 @@ export default function RemotePad() {
             <PressButton label="Full screen" onPress={() => send({ op: "fullscreen" })}><Maximize /></PressButton>
           </div>
           {connected ? (
-            <section className="media-row" data-solo={isPlaying ? "false" : "true"} aria-label="Media controls">
-              {isPlaying ? (
-              <PressButton label="Play or pause" onPress={() => {
-                const next = !(playOverride ?? playing ?? false);
-                setPlayOverride(next);
-                window.clearTimeout(playTimer.current);
-                playTimer.current = window.setTimeout(() => setPlayOverride(null), 2500);
-                send({ op: "media", action: "toggle" });
-              }}>
-                {isPlaying ? <Pause /> : <Play />}
-              </PressButton>
-              ) : null}
+            <section className="media-row" data-playing={isPlaying ? "true" : "false"} aria-label="Media controls">
+              <div className="media-play" inert={!isPlaying}>
+                <PressButton label="Play or pause" onPress={() => {
+                  const next = !(playOverride ?? playing ?? false);
+                  setPlayOverride(next);
+                  window.clearTimeout(playTimer.current);
+                  playTimer.current = window.setTimeout(() => setPlayOverride(null), 2500);
+                  send({ op: "media", action: "toggle" });
+                }}>
+                  {isPlaying ? <Pause key="pause" /> : <Play key="play" />}
+                </PressButton>
+              </div>
               <label>
                 <VolumeIcon level={shownVolume} />
                 <input
@@ -1062,53 +1166,6 @@ export default function RemotePad() {
               <PressButton label="Forward" onPress={() => send({ op: "browse", action: "forward" })}><ChevronRight /></PressButton>
               <PressButton label="Reload" onPress={() => send({ op: "browse", action: "reload" })}><RotateCw /></PressButton>
               <PressButton label="New tab" onPress={() => send({ op: "browse", action: "newtab" })}><Plus /></PressButton>
-            </div>
-          ) : null}
-          {desk?.browser && (desk.tabs.length > 0 || desk.tabError) ? (
-            <div className="tab-row" data-scroll>
-              {desk.tabError ? <p className="tab-note">{desk.tabError}</p> : null}
-              {desk.tabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  data-on={tab.active ? "true" : "false"}
-                  onClick={() => focusTab(tab.index)}
-                >
-                  {tab.title}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {pendingQuit ? (
-            <div className="quit-confirm">
-              <p>Force quit {pendingQuit.name}?</p>
-              <button type="button" onClick={() => setPendingQuit(null)}>Cancel</button>
-              <button
-                type="button"
-                className="danger"
-                onClick={() => {
-                  const id = pendingQuit.id;
-                  setPendingQuit(null);
-                  quitApp(id);
-                }}
-              >
-                Force quit
-              </button>
-            </div>
-          ) : null}
-          {desk && desk.apps.length > 0 ? (
-            <div className="dock" data-scroll aria-label="Open apps" ref={dockRef}>
-              {desk.apps.map((app) => (
-                <DockButton
-                  key={app.id}
-                  id={app.id}
-                  name={app.name}
-                  icon={app.icon || ""}
-                  active={app.id === desk.front}
-                  onOpen={() => focusApp(app.id)}
-                  onAskQuit={() => setPendingQuit({ id: app.id, name: app.name })}
-                />
-              ))}
             </div>
           ) : null}
         </footer>
@@ -1253,21 +1310,7 @@ function Slider({
   );
 }
 
-function DockButton({
-  id,
-  name,
-  icon,
-  active,
-  onOpen,
-  onAskQuit,
-}: {
-  id: string;
-  name: string;
-  icon: string;
-  active: boolean;
-  onOpen: () => void;
-  onAskQuit: () => void;
-}) {
+function useHold(onHold: () => void) {
   const [holding, setHolding] = useState(false);
   const timers = useRef({ arm: 0, fire: 0 });
   const moved = useRef(false);
@@ -1290,15 +1333,11 @@ function DockButton({
     setHolding(false);
   }
 
-  return (
-    <button
-      type="button"
-      data-app-id={id}
-      data-on={active ? "true" : "false"}
-      data-holding={holding ? "true" : "false"}
-      aria-label={holding ? `Force quit ${name}` : name}
-      onContextMenu={(event) => event.preventDefault()}
-      onPointerDown={(event) => {
+  return {
+    holding,
+    props: {
+      onContextMenu: (event: ReactMouseEvent) => event.preventDefault(),
+      onPointerDown: (event: ReactPointerEvent) => {
         if (event.button !== 0) return;
         moved.current = false;
         held.current = false;
@@ -1306,29 +1345,93 @@ function DockButton({
         timers.current.arm = window.setTimeout(() => setHolding(true), 280);
         timers.current.fire = window.setTimeout(() => {
           held.current = true;
-          onAskQuit();
+          onHold();
         }, 460);
-      }}
-      onPointerMove={(event) => {
+      },
+      onPointerMove: (event: ReactPointerEvent) => {
         if (moved.current) return;
         if (Math.hypot(event.clientX - origin.current.x, event.clientY - origin.current.y) > 10) {
           moved.current = true;
           clear();
         }
-      }}
-      onPointerUp={clear}
-      onPointerCancel={() => {
+      },
+      onPointerUp: clear,
+      onPointerCancel: () => {
         moved.current = true;
         clear();
-      }}
+      },
+    },
+    /** True when the release that follows should not count as a tap. */
+    consumed: () => held.current || moved.current,
+  };
+}
+
+function DockButton({
+  id,
+  name,
+  icon,
+  active,
+  onOpen,
+  onAskQuit,
+}: {
+  id: string;
+  name: string;
+  icon: string;
+  active: boolean;
+  onOpen: () => void;
+  onAskQuit: () => void;
+}) {
+  const hold = useHold(onAskQuit);
+  return (
+    <button
+      type="button"
+      data-app-id={id}
+      data-on={active ? "true" : "false"}
+      data-holding={hold.holding ? "true" : "false"}
+      aria-label={hold.holding ? `Force quit ${name}` : name}
+      {...hold.props}
       onClick={() => {
-        if (held.current || moved.current) return;
+        if (hold.consumed()) return;
         onOpen();
       }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- These are runtime data URLs from the local Mac, not network images. */}
       {icon ? <img src={`data:image/png;base64,${icon}`} alt="" draggable={false} /> : <i>{name.slice(0, 1)}</i>}
-      <span>{holding ? "Quit?" : name}</span>
+      <span>{hold.holding ? "Quit?" : name}</span>
+    </button>
+  );
+}
+
+function TabButton({
+  title,
+  icon,
+  active,
+  onOpen,
+  onAskClose,
+}: {
+  title: string;
+  icon: string;
+  active: boolean;
+  onOpen: () => void;
+  onAskClose: () => void;
+}) {
+  const hold = useHold(onAskClose);
+  return (
+    <button
+      type="button"
+      data-on={active ? "true" : "false"}
+      data-holding={hold.holding ? "true" : "false"}
+      data-icon={icon ? "true" : "false"}
+      aria-label={hold.holding ? `Close ${title}` : title}
+      title={title}
+      {...hold.props}
+      onClick={() => {
+        if (hold.consumed()) return;
+        onOpen();
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element -- Runtime data URL fetched by the local agent. */}
+      {icon ? <img src={icon} alt="" draggable={false} /> : hold.holding ? "Close?" : title}
     </button>
   );
 }
@@ -1422,4 +1525,23 @@ function PressButton({
       {children}
     </button>
   );
+}
+
+/** Keeps an element mounted while its exit animation plays. */
+function usePresence(open: boolean, ms = 220) {
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  useEffect(() => {
+    if (open || !mounted) return;
+    const timer = window.setTimeout(() => setMounted(false), ms);
+    return () => window.clearTimeout(timer);
+  }, [open, mounted, ms]);
+  return { mounted, state: open ? "open" : "closed" } as const;
+}
+
+/** The last non-empty value, so content stays readable while it animates out. */
+function useLast<T>(value: T | null | "") {
+  const [last, setLast] = useState<T | null>(value || null);
+  if (value && value !== last) setLast(value);
+  return last;
 }

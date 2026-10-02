@@ -5,8 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { formatToken, loadToken, tokenMatches } from "./token.mjs";
+import { cachedFavicon, loadFavicons } from "./favicon.mjs";
 import { enableTailscaleHttps, pageOrigins } from "./net.mjs";
-import { activateTab, automationDenied, browserKind, browserName, firefoxChords, listTabs } from "./tabs.mjs";
+import { activateTab, automationDenied, closeTab, browserKind, browserName, firefoxChords, listTabs } from "./tabs.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const agentDir = path.join(root, "agent");
@@ -129,9 +130,10 @@ function sanitize(message) {
       }
       return null;
     case "tab":
+    case "closetab":
       if (message.browser !== "chromium" && message.browser !== "safari" && message.browser !== "firefox") return null;
       return {
-        op: "tab",
+        op: message.op,
         browser: message.browser,
         index: clamp(Math.round(Number(message.index) || 1), 1, 40),
         count: clamp(Math.round(Number(message.count) || 1), 1, 80),
@@ -442,8 +444,18 @@ function sendDesk(ws, payload) {
     known.add(app.id);
     return { id: app.id, name: app.name, icon: app.icon };
   });
+  const knownTab = ws.knownTabIcons ?? (ws.knownTabIcons = new Set());
+  const tabIcons = {};
+  for (const tab of payload.tabs) {
+    const icon = tab.host ? cachedFavicon(tab.host) : "";
+    if (icon && !knownTab.has(tab.host)) {
+      knownTab.add(tab.host);
+      tabIcons[tab.host] = icon;
+    }
+  }
   ws.send(JSON.stringify({
     type: "desk",
+    tabIcons,
     front: payload.front,
     browser: payload.browser,
     apps,
@@ -489,11 +501,18 @@ async function refreshDesk() {
             index: tab.index,
             title: tab.title,
             active: Boolean(tab.active),
+            host: tab.host || "",
           })),
           tabCount: tabs.total || tabs.length,
           tabError,
         };
         sendDesk(active, latestDesk);
+        const hosts = latestDesk.tabs.map((tab) => tab.host).filter(Boolean);
+        if (hosts.length) {
+          void loadFavicons(hosts).then((changed) => {
+            if (changed && active && latestDesk) sendDesk(active, latestDesk);
+          });
+        }
       } catch (error) {
         if (seen === deskEpoch) console.error(error instanceof Error ? error.message : error);
       }
@@ -559,6 +578,23 @@ async function quitApp(bundle) {
   void refreshDesk();
 }
 
+async function closeTabNow(message) {
+  try {
+    if (message.browser === "firefox") {
+      await focusTab(message);
+      await wait(120);
+      writeHelper({ op: "chord", name: "w", cmd: true, ctrl: false, alt: false, shift: false });
+    } else {
+      deskEpoch += 1;
+      await closeTab(message.browser, message.index);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+  }
+  await wait(250);
+  void refreshDesk();
+}
+
 async function focusTab(message) {
   deskEpoch += 1;
   try {
@@ -574,7 +610,7 @@ async function focusTab(message) {
           alt: false,
           shift: false,
         });
-        await wait(45);
+        await wait(70);
       }
     } else {
       await activateTab(message.browser, message.index);
@@ -709,6 +745,10 @@ wss.on("connection", (ws) => {
     }
     if (clean.op === "tab") {
       void focusTab(clean);
+      return;
+    }
+    if (clean.op === "closetab") {
+      void closeTabNow(clean);
       return;
     }
     if (clean.op === "tune") {

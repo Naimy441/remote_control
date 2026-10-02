@@ -42,7 +42,7 @@ The pad tracks at most two fingers, each shown as a glowing ring.
 
 ### Gyro mouse
 
-Tap the 3D-move icon at the top to move the pointer by turning or tilting the phone, and tap it again to stop. Turning follows the rotation around gravity and tilting follows the phone's pitch, so it works held flat or upright. The pad still works normally with a finger. Settings has a gyro sensitivity slider, a **Calibrate gyro** wizard, and a Reset button. iOS asks for Motion & Orientation access the first time, and that only works over HTTPS (see below).
+Tap the 3D-move icon at the top to move the pointer by turning or tilting the phone, and tap it again to stop. Turning follows the rotation around gravity and tilting follows the phone's pitch, so it works held flat or upright. While gyro is on, a one-finger drag (and two-finger drag) scrolls, and tap still clicks. Settings has a gyro sensitivity slider, a **Calibrate gyro** wizard, and a Reset button. iOS asks for Motion & Orientation access the first time, and that only works over HTTPS (see below).
 
 #### Calibrating the gyro
 
@@ -62,7 +62,7 @@ Everything under the pad is an icon. Left to right, top to bottom:
 | Media | Play/pause and a volume slider |
 | Browser | Back, forward, reload, new tab. Shown when Safari, Chrome, or Firefox is in front. |
 
-Tap an app in the dock to switch to it. Hold an app, then confirm, to force quit it. New apps animate in and the dock slides when the order changes. When a browser is in front, its tabs appear above the dock. The gear at the top opens connection, pointer speed, and scroll speed settings.
+Tap an app in the dock to switch to it. Hold an app, then confirm, to force quit it. New apps animate in and the dock slides when the order changes. When a browser is in front, its tabs appear above the dock. A tab shows its site icon when no other tab shares that site, otherwise its title; tap to switch, and hold a tab, then confirm, to close it. The agent fetches each icon directly from the site's own `/favicon.ico` (or page icon link) and caches it. Firefox tabs switch by position with Cmd+1/Cmd+9 and Cmd+Option+Arrow, and its list comes from Firefox's session file, which Firefox refreshes about every 15 seconds. The gear at the top opens connection, pointer speed, and scroll speed settings.
 
 Mission Control runs `open -a "Mission Control"` on the Mac, which works even when the Control-Up keyboard shortcut is not set up.
 
