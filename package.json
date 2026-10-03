@@ -9,6 +9,7 @@
     "lint": "eslint",
     "agent": "node agent/server.mjs",
     "mac": "node scripts/mac.mjs",
+    "app": "node scripts/app.mjs",
     "setup-signing": "node scripts/setup-signing.mjs"
   },
   "dependencies": {

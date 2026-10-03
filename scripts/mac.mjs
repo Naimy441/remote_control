@@ -1,9 +1,9 @@
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatToken, tokenFile } from "../agent/token.mjs";
-import { ensureSigned, signBinary } from "../agent/sign.mjs";
+import { installMenuApp } from "../agent/menu-app.mjs";
 import { enableTailscaleHttps, pageOrigins } from "../agent/net.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -11,10 +11,6 @@ const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const webPort = process.env.WEB_PORT || "3000";
 const agentPort = process.env.AGENT_PORT || "8787";
 const pidPath = path.join(root, "agent", "bin", "remote.pid");
-const menuSource = path.join(root, "agent", "menu.swift");
-const menuInfo = path.join(root, "agent", "menu-Info.plist");
-const menuApp = path.join(root, "agent", "bin", "Remote Control.app");
-const menuBinary = path.join(menuApp, "Contents", "MacOS", "RemoteMenu");
 const menuPidPath = path.join(root, "agent", "bin", "menu.pid");
 
 const children = [];
@@ -56,29 +52,9 @@ function pidAlive(file) {
 
 function openMenu() {
   try {
-    // Older builds called the app RemoteMenu; drop it so only "Remote Control" is left.
-    fs.rmSync(path.join(root, "agent", "bin", "RemoteMenu.app"), { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(menuBinary), { recursive: true });
-    fs.copyFileSync(menuInfo, path.join(menuApp, "Contents", "Info.plist"));
-    const sourceTime = fs.statSync(menuSource).mtimeMs;
-    const binaryTime = fs.existsSync(menuBinary) ? fs.statSync(menuBinary).mtimeMs : 0;
-    fs.writeFileSync(path.join(root, "agent", "bin", "node-path"), process.execPath);
-    if (binaryTime >= sourceTime) ensureSigned(menuApp, "local.remote-control.menu");
-    if (binaryTime < sourceTime) {
-      console.log("Compiling the menu bar control…");
-      execFileSync("swiftc", ["-O", "-o", menuBinary, menuSource], { stdio: "inherit" });
-      signBinary(menuApp, "local.remote-control.menu");
-      // A menu bar app from the old build is still running; replace it with the new one.
-      try {
-        const old = Number(fs.readFileSync(menuPidPath, "utf8").trim());
-        if (old) process.kill(old, "SIGTERM");
-        fs.rmSync(menuPidPath, { force: true });
-      } catch {
-        // Nothing was running.
-      }
-    }
+    const menuApp = installMenuApp(root);
     if (pidAlive(menuPidPath)) return;
-    const menu = spawn("/usr/bin/open", ["-n", menuApp, "--args", root, process.execPath], {
+    const menu = spawn("/usr/bin/open", [menuApp, "--args", root, process.execPath], {
       detached: true,
       stdio: "ignore",
     });

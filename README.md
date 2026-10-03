@@ -13,10 +13,18 @@ This is meant for your own tailnet. Do not port-forward it, and do not put it on
 
 ## Run it
 
-On the Mac:
+On the Mac, once:
 
 ```bash
 npm install
+npm run app
+```
+
+This installs **Remote Control** in `/Applications` (or `~/Applications` if `/Applications` is not writable) and opens it. From then on, open Remote Control from Spotlight (⌘ Space, "Remote Control") like any other app. Opening it starts RC in the background and shows the `RC` menu with the phone link. Opening it again while it runs shows the menu again, and starts RC if it was stopped. Quit Remote Control from its menu stops everything. Turn on **Open at Login** in the same menu to have RC start with the Mac.
+
+To run in a terminal instead, with the server output in front of you:
+
+```bash
 npm run mac
 ```
 
@@ -24,11 +32,13 @@ The terminal prints a link and a token. On the phone, turn Tailscale on and open
 
 The first run creates `agent/.token` (mode `600`). That file, the printed links in `agent/link.txt`, and the compiled helpers in `agent/bin/` stay on the machine. They are listed in `.gitignore`. To issue a new token, stop the agent, delete `agent/.token`, and start again. You can also set `AGENT_TOKEN` in the environment instead of using the file.
 
-`RC` appears in the Mac menu bar, next to Wi-Fi and Control Center. Use it to start or stop, or to copy the phone link. Stopping from the menu quits this command. `RC` stays, so you can start again without opening Terminal. Remove from menu bar hides it; the next `npm run mac` puts it back.
+`RC` appears in the Mac menu bar, next to Wi-Fi and Control Center. Use it to start or stop, or to copy the phone link. Stopping from the menu quits this command. `RC` stays, so you can start again without opening Terminal. Quit Remote Control stops RC and removes `RC` from the menu bar; open the app again to bring it back. `npm run mac` and `npm run app` rebuild the app when `agent/menu.swift` changes.
+
+If `RC` is missing from the menu bar while the app is running, the menu bar is probably full: on a Mac with a camera notch, macOS hides the items that do not fit behind it, without saying so. Open Remote Control again; when it cannot see its own menu bar item, it shows a window with Start/Stop and Copy Phone Link instead. Quitting a menu bar app you do not need, or holding ⌘ and dragging `RC` further right, makes room. Also check that Remote Control is allowed under System Settings → Menu Bar.
 
 Accessibility permission is attributed to the app that launched RC, not to the helper itself. Started from the menu bar, that is **Remote Control** (the menu bar app); started with `npm run mac` in Terminal, it is **Terminal** (or iTerm, VS Code, and so on). Turn that app on in System Settings → Privacy & Security → Accessibility. The menu bar shows "Running, needs Accessibility" and an **Allow Accessibility for RC…** item until it is granted. If the pointer still does not move, quit RC and start it again.
 
-Only one entry is needed. If the list has stale RemoteInput or RemoteMenu entries from older builds, select them and press `−`, then add `agent/bin/Remote Control.app` with `+`.
+Only one entry is needed. If the list has stale RemoteInput or RemoteMenu entries from older builds, select them and press `−`, then add `/Applications/Remote Control.app` with `+`.
 
 Helpers are signed with your Apple Development certificate when one is in your keychain (set `RC_SIGN_IDENTITY` to pick another), using fixed identifiers. macOS ties Accessibility, Automation and folder permissions to the signature, and an ad-hoc signature changes on every rebuild, so with a certificate each grant sticks. Without one it falls back to ad hoc and the prompts come back after each rebuild.
 

@@ -1,17 +1,17 @@
 import AppKit
 import ApplicationServices
 import Darwin
+import ServiceManagement
 
-// When macOS opens this app at login it passes no arguments and the working directory is "/".
-// The project root is then recovered from the bundle location (<root>/agent/bin/Remote Control.app).
-let bundleSuffix = "/agent/bin/Remote Control.app"
-let bundleRoot: String? = Bundle.main.bundlePath.hasSuffix(bundleSuffix)
-  ? String(Bundle.main.bundlePath.dropLast(bundleSuffix.count))
-  : nil
+// `npm run mac` opens this app with the project root and node as arguments. Opened from Spotlight,
+// Finder or at login there are no arguments, and the project root comes from the RCProjectRoot key
+// that the installer writes into Info.plist.
+let launchedByScript = CommandLine.arguments.count > 1 && !CommandLine.arguments[1].hasPrefix("-psn")
+let plistRoot = (Bundle.main.object(forInfoDictionaryKey: "RCProjectRoot") as? String).flatMap { $0.isEmpty ? nil : $0 }
 let root = URL(
-  fileURLWithPath: CommandLine.arguments.count > 1
+  fileURLWithPath: launchedByScript
     ? CommandLine.arguments[1]
-    : (bundleRoot ?? FileManager.default.currentDirectoryPath),
+    : (plistRoot ?? FileManager.default.currentDirectoryPath),
   isDirectory: true
 )
 let binDir = root.appendingPathComponent("agent/bin", isDirectory: true)
@@ -25,7 +25,7 @@ let nodeHintFile = binDir.appendingPathComponent("node-path")
 // Login items get a bare PATH, so node (often installed by nvm) has to be found explicitly:
 // the path `npm run mac` last used, then the user's login shell.
 func resolveNode() -> String? {
-  if CommandLine.arguments.count > 2, FileManager.default.isExecutableFile(atPath: CommandLine.arguments[2]) {
+  if launchedByScript, CommandLine.arguments.count > 2, FileManager.default.isExecutableFile(atPath: CommandLine.arguments[2]) {
     return CommandLine.arguments[2]
   }
   if let hint = try? String(contentsOf: nodeHintFile, encoding: .utf8)
@@ -56,7 +56,15 @@ func alive(_ pid: Int32) -> Bool {
 }
 
 let ownPid = Int32(ProcessInfo.processInfo.processIdentifier)
-if let existing = readPid(menuPidFile), existing != ownPid, alive(existing) {
+let showNotice = Notification.Name("local.remote-control.menu.show")
+// Only one RC menu. A second copy asks the running one to show itself, then leaves. This checks
+// running apps rather than menu.pid, which can be stale or point at a reused process id.
+let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "local.remote-control.menu")
+  .filter { $0.processIdentifier != ownPid }
+if !others.isEmpty {
+  if !launchedByScript {
+    DistributedNotificationCenter.default().postNotificationName(showNotice, object: nil, userInfo: nil, deliverImmediately: true)
+  }
   exit(0)
 }
 try? FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
@@ -66,7 +74,7 @@ func shellQuote(_ value: String) -> String {
   "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
-final class MenuApp: NSObject, NSMenuDelegate {
+final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
   static let shared = MenuApp()
   var status: NSStatusItem?
   let menu = NSMenu()
@@ -74,8 +82,17 @@ final class MenuApp: NSObject, NSMenuDelegate {
 
   func start() {
     NSApplication.shared.setActivationPolicy(.accessory)
+    NSApplication.shared.delegate = self
+    NSApplication.shared.run()
+  }
+
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    let event = NSAppleEventManager.shared().currentAppleEvent
+    let atLogin = event?.eventID == AEEventID(kAEOpenApplication)
+      && event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     status = item
+    item.autosaveName = "RC"
     item.isVisible = true
     if let button = item.button {
       button.image = nil
@@ -91,7 +108,65 @@ final class MenuApp: NSObject, NSMenuDelegate {
     Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
       self?.rebuild()
     }
-    NSApplication.shared.run()
+    DistributedNotificationCenter.default().addObserver(forName: showNotice, object: nil, queue: .main) { [weak self] _ in
+      self?.open()
+    }
+    // Opening the app is how RC is started. `npm run mac` starts the server itself.
+    if !launchedByScript {
+      if serverPid() == nil { startServer() }
+      if !atLogin {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.reveal() }
+      }
+    }
+  }
+
+  // Opening the app again from Spotlight, Finder or the Dock while it is running.
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    open()
+    return false
+  }
+
+  func open() {
+    if serverPid() == nil { startServer() }
+    reveal()
+  }
+
+  // A full menu bar hides the items that do not fit behind the camera notch, and macOS gives no
+  // sign of it. When RC is not on screen, say so in a window instead of opening a menu nobody sees.
+  func onScreen() -> Bool {
+    guard let window = status?.button?.window, let screen = window.screen else { return false }
+    if !window.occlusionState.contains(.visible) { return false }
+    if let right = screen.auxiliaryTopRightArea {
+      return window.frame.minX >= right.minX - 1 && window.frame.maxX <= right.maxX + 1
+    }
+    return screen.frame.intersects(window.frame)
+  }
+
+  func reveal() {
+    if onScreen() {
+      status?.button?.performClick(nil)
+      return
+    }
+    NSApp.activate(ignoringOtherApps: true)
+    let running = serverPid() != nil
+    let alert = NSAlert()
+    alert.messageText = running ? "Remote Control is running" : "Remote Control is stopped"
+    alert.informativeText = "RC is in the menu bar, but macOS is hiding it, usually because the menu bar is full and RC ended up behind the camera notch. Quit a menu bar app you do not need, or hold ⌘ and drag RC further right. Also check that Remote Control is allowed under System Settings → Menu Bar.\n\nOpen Remote Control again any time to see this."
+    alert.addButton(withTitle: "OK")
+    alert.addButton(withTitle: running ? "Stop" : "Start")
+    let link = links().first
+    if link != nil { alert.addButton(withTitle: "Copy Phone Link") }
+    switch alert.runModal() {
+    case .alertSecondButtonReturn:
+      if running { stopServer() } else { startServer() }
+    case .alertThirdButtonReturn:
+      if let link {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(link, forType: .string)
+      }
+    default:
+      break
+    }
   }
 
   func serverPid() -> Int32? {
@@ -138,7 +213,12 @@ final class MenuApp: NSObject, NSMenuDelegate {
       menu.addItem(hint)
     }
     menu.addItem(.separator())
-    menu.addItem(item("Remove from menu bar", #selector(quitMenu)))
+    let login = item("Open at Login", #selector(toggleLogin))
+    login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+    menu.addItem(login)
+    let quit = item("Quit Remote Control", #selector(quitMenu))
+    quit.keyEquivalent = "q"
+    menu.addItem(quit)
   }
 
   func item(_ title: String, _ action: Selector) -> NSMenuItem {
@@ -205,7 +285,26 @@ final class MenuApp: NSObject, NSMenuDelegate {
     }
   }
 
+  @objc func toggleLogin() {
+    let service = SMAppService.mainApp
+    do {
+      if service.status == .enabled {
+        try service.unregister()
+      } else {
+        try service.register()
+      }
+    } catch {
+      flash("RC!", "Could not change Open at Login: \(error.localizedDescription)")
+    }
+    if service.status == .requiresApproval {
+      SMAppService.openSystemSettingsLoginItems()
+    }
+    rebuild()
+  }
+
+  // Quitting the app stops RC too, like any other app.
   @objc func quitMenu() {
+    if let pid = serverPid() { kill(pid, SIGTERM) }
     if readPid(menuPidFile) == ownPid {
       try? FileManager.default.removeItem(at: menuPidFile)
     }
