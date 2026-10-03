@@ -1,6 +1,7 @@
 // Quick buttons: the user-chosen shortcuts shown on the side of the trackpad.
 export type QuickId =
   | "keyboard" | "dictate" | "enter" | "backspace"
+  | "arrowLeft" | "arrowUp" | "arrowDown" | "arrowRight"
   | "scroll" | "leftClick" | "rightClick" | "dragLock"
   | "mission" | "fullscreen" | "pageUp" | "pageDown" | "playPause"
   | "back" | "forward" | "reload" | "newTab";
@@ -12,6 +13,10 @@ export const quickMeta: Record<QuickId, { label: string; group: QuickGroup }> = 
   dictate: { label: "Dictate", group: "Keys" },
   enter: { label: "Enter", group: "Keys" },
   backspace: { label: "Backspace", group: "Keys" },
+  arrowLeft: { label: "Left arrow", group: "Keys" },
+  arrowUp: { label: "Up arrow", group: "Keys" },
+  arrowDown: { label: "Down arrow", group: "Keys" },
+  arrowRight: { label: "Right arrow", group: "Keys" },
   scroll: { label: "Scroll lock", group: "Pointer" },
   leftClick: { label: "Left click", group: "Pointer" },
   rightClick: { label: "Right click", group: "Pointer" },

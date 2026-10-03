@@ -7,12 +7,15 @@ export function PressButton({
   onPress,
   pressed = false,
   repeat = false,
+  clickOnly = false,
   label,
 }: {
   children: ReactNode;
   onPress: () => void;
   pressed?: boolean;
   repeat?: boolean;
+  /** Act on the click, not on release. Needed for actions that must run inside a real click, like opening the keyboard. */
+  clickOnly?: boolean;
   label: string;
 }) {
   const hold = useRef(0);
@@ -46,8 +49,8 @@ export function PressButton({
       aria-label={label}
       aria-pressed={pressed}
       data-on={pressed ? "true" : "false"}
-      onPointerDown={press}
-      onPointerUp={(event) => {
+      onPointerDown={clickOnly ? undefined : press}
+      onPointerUp={clickOnly ? undefined : (event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         const inside =
           event.clientX >= rect.left &&
@@ -61,12 +64,12 @@ export function PressButton({
         }
         repeated.current = false;
       }}
-      onPointerCancel={() => {
+      onPointerCancel={clickOnly ? undefined : () => {
         clear();
         repeated.current = false;
       }}
       onClick={() => {
-        if (fromPointer.current) {
+        if (!clickOnly && fromPointer.current) {
           fromPointer.current = false;
           return;
         }

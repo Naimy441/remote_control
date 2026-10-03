@@ -13,6 +13,7 @@ export type AgentMessage =
   | { op: "focus"; id: string }
   | { op: "quit"; id: string }
   | { op: "tab" | "closetab"; browser: BrowserKind; index: number; count: number }
+  | { op: "prefs"; allTabs: boolean }
   | { op: "fullscreen" }
   | { op: "center" }
   | { op: "moveto"; x: number; y: number }
@@ -40,10 +41,22 @@ export type DeskTab = {
   host?: string;
 };
 
+export type DeskBrowser = {
+  kind: BrowserKind;
+  id: string;
+  name: string;
+  front: boolean;
+  tabs: DeskTab[];
+  tabCount: number;
+  tabError: string;
+};
+
 export type DeskSnapshot = {
   front: string;
   browser: BrowserKind | "";
   apps: DeskApp[];
+  /** Tab lists per browser: just the one in front, or every running browser when "always show web tabs" is on. */
+  browsers: DeskBrowser[];
   tabs: DeskTab[];
   tabCount: number;
   tabError: string;

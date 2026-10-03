@@ -10,6 +10,7 @@ export type QuickItem = {
   icon: LucideIcon;
   active: boolean;
   repeat?: boolean;
+  clickOnly?: boolean;
   onPress: () => void;
 };
 
@@ -99,8 +100,8 @@ export function QuickRail({ items }: { items: QuickItem[] }) {
           if (pressing.current || Date.now() - lastTouch.current < 2500) wake();
         }}
       >
-        {items.map(({ id, label, icon: Icon, active, repeat, onPress }) => (
-          <PressButton key={id} label={label} pressed={active} repeat={repeat} onPress={onPress}>
+        {items.map(({ id, label, icon: Icon, active, repeat, clickOnly, onPress }) => (
+          <PressButton key={id} label={label} pressed={active} repeat={repeat} clickOnly={clickOnly} onPress={onPress}>
             <Icon />
           </PressButton>
         ))}

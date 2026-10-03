@@ -3,7 +3,6 @@
 const cache = new Map();
 const failedAt = new Map();
 const RETRY_MS = 5 * 60 * 1000;
-const USE_SERVICE = !process.env.NO_FAVICON_SERVICE;
 const HEADERS = { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15", accept: "image/*,*/*;q=0.8" };
 const pending = new Map();
 const MAX_BYTES = 40000;
@@ -66,19 +65,19 @@ async function fetchIcon(host) {
   } catch {
     // Fall through to the icon service.
   }
-  // Single-page apps (Google Keep, Docs, ...) often render their icon link with JavaScript, so
-  // neither source above has it. As a last resort ask Google's favicon service, which does
-  // mean that hostname is sent to Google; set NO_FAVICON_SERVICE=1 to turn this off.
-  if (!USE_SERVICE) return null;
-  try {
-    return await grab(`https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(host)}`);
-  } catch {
-    return null;
-  }
+  return null;
 }
 
+/**
+ * The site's own icon, or "" when there is none worth showing. An icon that several different hosts return
+ * (for example one generic logo for every subdomain of a company) says nothing about the page, so it is dropped.
+ */
 export function cachedFavicon(host) {
-  return cache.get(host) || "";
+  const icon = cache.get(host) || "";
+  if (!icon) return "";
+  let owners = 0;
+  for (const value of cache.values()) if (value === icon) owners++;
+  return owners > 1 ? "" : icon;
 }
 
 /** Resolve icons for these hosts; resolves true when something new was cached. */

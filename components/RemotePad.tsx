@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   browserKind,
+  type DeskApp,
+  type DeskBrowser,
+  type DeskTab,
+  type BrowserKind,
   defaultAgentUrl,
   emptyMods,
   formatToken,
@@ -62,7 +66,7 @@ import { quickIcons } from "@/components/quickIcons";
 import { SettingsPage } from "@/components/SettingsPage";
 import { defaultQuick, parseQuick, quickMeta, quickStorageKey, type QuickId } from "@/lib/quick";
 import { PressButton } from "@/components/PressButton";
-import { useLast, usePresence } from "@/components/presence";
+import { useExiting, useLast, usePresence } from "@/components/presence";
 import { useAgent, type AgentStatus } from "@/components/useAgent";
 
 type SpeechResultList = ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
@@ -99,6 +103,9 @@ export default function RemotePad() {
   const [dragLock, setDragLock] = useState(false);
   const [scrollMode, setScrollMode] = useState(false);
   const [gyro, setGyro] = useState(false);
+  const [leftHanded, setLeftHanded] = useState(false);
+  const [allTabs, setAllTabs] = useState(false);
+  const allTabsRef = useRef(false);
   const [gyroSens, setGyroSens] = useState(1);
   const [calib, setCalib] = useState<{
     step: number;
@@ -107,7 +114,8 @@ export default function RemotePad() {
     peaks: Partial<Record<CalibStep, number>>;
   } | null>(null);
   const [keyboard, setKeyboard] = useState(false);
-  const [pendingTab, setPendingTab] = useState<{ index: number; title: string } | null>(null);
+  const keyboardJustOpened = useRef(false);
+  const [pendingTab, setPendingTab] = useState<{ browser: BrowserKind; index: number; title: string } | null>(null);
   const [pendingQuit, setPendingQuit] = useState<{ id: string; name: string } | null>(null);
   const [hint, setHint] = useState(true);
 
@@ -175,7 +183,7 @@ export default function RemotePad() {
     hintRef.current = hint;
   }, [dragLock, gyro, gyroSens, hint, mods, scrollMode, scrollSens, sens]);
 
-  const { status, trusted, rtt, battery, volume, setVolume, playing, protocol, tune: agentTune, display, tabIcons, macClipboard, error, send, desk, setDesk } = useAgent({
+  const { status, trusted, rtt, battery, volume, setVolume, playing, protocol, tune: agentTune, display, tabIcons, macClipboard, error, send, hideApp, desk, setDesk } = useAgent({
     url: session?.url ?? "",
     token: session?.token ?? "",
     active: session !== null,
@@ -183,8 +191,17 @@ export default function RemotePad() {
   });
 
   const showBrowser = Boolean(desk?.browser);
-  const showTabs = Boolean(desk?.browser && (desk.tabs.length > 0 || desk.tabError));
-  const tabDesk = useLast(showTabs ? desk : null);
+  const tabGroups = useMemo(() => desk?.browsers.filter((group) => group.tabs.length > 0 || group.tabError) ?? [], [desk]);
+  const showTabs = tabGroups.length > 0;
+  const tabView = useLast(showTabs ? tabGroups : null);
+  const tabEntries = useExiting(tabView ?? NO_GROUPS, (group) => group.kind);
+  const dockEntries = useExiting(desk?.apps ?? NO_APPS, (app) => app.id);
+
+  useEffect(() => {
+    // Tell the Mac whether to list tabs for every running browser or only the one in front.
+    allTabsRef.current = allTabs;
+    if (status === "open") send({ op: "prefs", allTabs });
+  }, [allTabs, send, status]);
   const dockIds = desk?.apps.map((app) => app.id).join("|") ?? "";
   useLayoutEffect(() => {
     const dock = dockRef.current;
@@ -303,11 +320,15 @@ export default function RemotePad() {
     localStorage.setItem("remote.scroll", String(scrollSens));
     localStorage.setItem("remote.scrollmode", scrollMode ? "1" : "0");
     localStorage.setItem("remote.gyro", String(gyroSens));
-  }, [booted, gyroSens, scrollMode, scrollSens, sens]);
+    localStorage.setItem("remote.hand", leftHanded ? "left" : "right");
+    localStorage.setItem("remote.alltabs", allTabs ? "1" : "0");
+  }, [allTabs, booted, gyroSens, leftHanded, scrollMode, scrollSens, sens]);
 
   useEffect(() => {
     // Restored after hydration; the saved values only exist in localStorage.
     const timer = window.setTimeout(() => {
+      setLeftHanded(localStorage.getItem("remote.hand") === "left");
+      setAllTabs(localStorage.getItem("remote.alltabs") === "1");
       const saved = Number(localStorage.getItem("remote.gyro"));
       if (Number.isFinite(saved) && saved >= 0.3 && saved <= 3) setGyroSens(saved);
     }, 0);
@@ -405,10 +426,11 @@ export default function RemotePad() {
       // Only shrink to the visual viewport while the on-screen keyboard is up; otherwise the fixed layout fills the window.
       const keyboardUp = window.innerHeight - viewport.height > 120;
       if (keyboardUp) {
-        root.style.height = `${viewport.height}px`;
+        // The height goes through a CSS variable so the layout can animate to it.
+        root.style.setProperty("--app-h", `${viewport.height}px`);
         root.style.transform = `translateY(${viewport.offsetTop}px)`;
       } else {
-        root.style.height = "";
+        root.style.removeProperty("--app-h");
         root.style.transform = "";
       }
     };
@@ -904,6 +926,9 @@ export default function RemotePad() {
         ...current,
         front: id,
         browser: kind,
+        browsers: current.browsers
+          .filter((group) => allTabsRef.current || (kind && group.kind === kind))
+          .map((group) => ({ ...group, front: group.id === id })),
         tabs: kind && kind === current.browser ? current.tabs : [],
         tabError: kind && kind === current.browser ? current.tabError : "",
       };
@@ -934,19 +959,23 @@ export default function RemotePad() {
         tabError: leftFront ? "" : current.tabError,
       };
     });
+    hideApp(id);
     send({ op: "quit", id });
   }
 
-  function focusTab(index: number) {
-    if (!desk?.browser) return;
+  function focusTab(kind: BrowserKind, index: number) {
+    const group = desk?.browsers.find((entry) => entry.kind === kind);
+    if (!group) return;
     setDesk((current) => {
       if (!current) return current;
       return {
         ...current,
-        tabs: current.tabs.map((tab) => ({ ...tab, active: tab.index === index })),
+        browsers: current.browsers.map((entry) =>
+          entry.kind === kind ? { ...entry, tabs: entry.tabs.map((tab) => ({ ...tab, active: tab.index === index })) } : entry,
+        ),
       };
     });
-    send({ op: "tab", browser: desk.browser, index, count: desk.tabCount || desk.tabs.length });
+    send({ op: "tab", browser: kind, index, count: group.tabCount || group.tabs.length });
   }
 
   const shownVolume = draftVolume ?? volume ?? 50;
@@ -971,16 +1000,23 @@ export default function RemotePad() {
     volumeRelease.current = window.setTimeout(() => setDraftVolume(null), 500);
   }
 
-  function closeTab(index: number) {
-    if (!desk?.browser) return;
+  function closeTab(kind: BrowserKind, index: number) {
+    const group = desk?.browsers.find((entry) => entry.kind === kind);
+    if (!group) return;
     setDesk((current) => {
       if (!current) return current;
-      const tabs = current.tabs
-        .filter((tab) => tab.index !== index)
-        .map((tab) => (tab.index > index ? { ...tab, index: tab.index - 1, key: `${current.browser}:${tab.index - 1}` } : tab));
-      return { ...current, tabs, tabCount: Math.max(0, current.tabCount - 1) };
+      return {
+        ...current,
+        browsers: current.browsers.map((entry) => {
+          if (entry.kind !== kind) return entry;
+          const tabs = entry.tabs
+            .filter((tab) => tab.index !== index)
+            .map((tab) => (tab.index > index ? { ...tab, index: tab.index - 1, key: `${kind}:${tab.index - 1}` } : tab));
+          return { ...entry, tabs, tabCount: Math.max(0, entry.tabCount - 1) };
+        }),
+      };
     });
-    send({ op: "closetab", browser: desk.browser, index, count: desk.tabCount || desk.tabs.length });
+    send({ op: "closetab", browser: kind, index, count: group.tabCount || group.tabs.length });
   }
 
   function toggleMod(name: keyof Mods) {
@@ -1070,8 +1106,16 @@ export default function RemotePad() {
   function toggleKeyboard() {
     const input = inputRef.current;
     if (!input) return;
-    if (document.activeElement === input) input.blur();
-    else input.focus();
+    // A second event from the same tap must not close the keyboard it just opened.
+    if (document.activeElement === input && !keyboardJustOpened.current) {
+      input.blur();
+      return;
+    }
+    keyboardJustOpened.current = true;
+    window.setTimeout(() => {
+      keyboardJustOpened.current = false;
+    }, 400);
+    input.focus({ preventScroll: true });
   }
 
   function togglePlay() {
@@ -1152,6 +1196,10 @@ export default function RemotePad() {
     dictate: toggleDictation,
     enter: () => tapKey("return"),
     backspace: () => tapKey("delete"),
+    arrowLeft: () => tapKey("left"),
+    arrowUp: () => tapKey("up"),
+    arrowDown: () => tapKey("down"),
+    arrowRight: () => tapKey("right"),
     scroll: toggleScrollMode,
     leftClick: () => send({ op: "click", button: "left", count: 1 }),
     rightClick: () => send({ op: "click", button: "right", count: 1 }),
@@ -1178,7 +1226,9 @@ export default function RemotePad() {
     label: quickMeta[id].label,
     icon: id === "playPause" && isPlaying ? Pause : quickIcons[id],
     active: Boolean(quickActive[id]),
-    repeat: id === "backspace",
+    repeat: id === "backspace" || id.startsWith("arrow"),
+    // Opening the keyboard and starting the mic both need a real click, not a release event.
+    clickOnly: id === "keyboard" || id === "dictate",
     onPress: quickActions[id],
   }));
 
@@ -1186,7 +1236,7 @@ export default function RemotePad() {
   const connected = status === "open";
 
   return (
-    <div className="remote" id="remote-app" ref={rootRef} data-keyboard={keyboard ? "open" : "closed"}>
+    <div className="remote" id="remote-app" ref={rootRef} data-keyboard={keyboard ? "open" : "closed"} data-hand={leftHanded ? "left" : "right"}>
 
       {connected && trusted === false ? (
         <p className="warn">Allow RemoteInput in System Settings → Privacy & Security → Accessibility, then restart the Mac command.</p>
@@ -1374,23 +1424,21 @@ export default function RemotePad() {
         <div className="remote-base">
           <div className="fold" data-open={showTabs ? "true" : "false"}>
             <div className="fold-inner">
-              {tabDesk ? (
+              {tabView ? (
                 <div className="tab-row" data-scroll>
-                  {tabDesk.tabError ? <p className="tab-note">{tabDesk.tabError}</p> : null}
-                  {tabDesk.tabs.map((tab) => {
-                    const shared = tab.host ? tabDesk.tabs.filter((other) => other.host === tab.host).length : 0;
-                    const icon = tab.host && shared === 1 ? tabIcons[tab.host] ?? "" : "";
-                    return (
-                      <TabButton
-                        key={tab.key}
-                        title={tab.title}
-                        icon={icon}
-                        active={tab.active}
-                        onOpen={() => focusTab(tab.index)}
-                        onAskClose={() => setPendingTab({ index: tab.index, title: tab.title })}
-                      />
-                    );
-                  })}
+                  {tabEntries.map(({ key, item: group, leaving }) => (
+                    <TabGroup
+                      key={key}
+                      group={group}
+                      multi={tabEntries.filter((entry) => !entry.leaving).length > 1}
+                      leaving={leaving}
+                      appIcon={desk?.apps.find((app) => app.id === group.id)?.icon ?? ""}
+                      tabIcons={tabIcons}
+                      onFocusApp={() => focusApp(group.id)}
+                      onFocusTab={(index) => focusTab(group.kind, index)}
+                      onAskClose={(tab) => setPendingTab({ browser: group.kind, index: tab.index, title: tab.title })}
+                    />
+                  ))}
                 </div>
               ) : null}
             </div>
@@ -1403,9 +1451,9 @@ export default function RemotePad() {
                 type="button"
                 className="danger"
                 onClick={() => {
-                  const index = tabAskView.index;
+                  const { browser, index } = tabAskView;
                   setPendingTab(null);
-                  closeTab(index);
+                  closeTab(browser, index);
                 }}
               >
                 Close
@@ -1429,15 +1477,16 @@ export default function RemotePad() {
               </button>
             </div>
           ) : null}
-          {desk && desk.apps.length > 0 ? (
+          {desk && dockEntries.length > 0 ? (
             <div className="dock" data-scroll aria-label="Open apps" ref={dockRef}>
-              {desk.apps.map((app) => (
+              {dockEntries.map(({ key, item: app, leaving }) => (
                 <DockButton
-                  key={app.id}
+                  key={key}
                   id={app.id}
                   name={app.name}
                   icon={app.icon || ""}
                   active={app.id === desk.front}
+                  leaving={leaving}
                   onOpen={() => focusApp(app.id)}
                   onAskQuit={() => setPendingQuit({ id: app.id, name: app.name })}
                 />
@@ -1564,6 +1613,10 @@ export default function RemotePad() {
           onScrollSens={setScrollSens}
           gyroSens={gyroSens}
           onGyroSens={setGyroSens}
+          leftHanded={leftHanded}
+          onLeftHanded={setLeftHanded}
+          allTabs={allTabs}
+          onAllTabs={setAllTabs}
           onCalibrate={() => void startCalibration()}
           onTremor={() => void startTremorTest()}
           onResetGyro={() => send({ op: "tune", tune: defaultTune })}
@@ -1699,6 +1752,7 @@ function DockButton({
   name,
   icon,
   active,
+  leaving,
   onOpen,
   onAskQuit,
 }: {
@@ -1706,6 +1760,7 @@ function DockButton({
   name: string;
   icon: string;
   active: boolean;
+  leaving: boolean;
   onOpen: () => void;
   onAskQuit: () => void;
 }) {
@@ -1714,6 +1769,7 @@ function DockButton({
     <button
       type="button"
       data-app-id={id}
+      data-leaving={leaving ? "true" : "false"}
       data-on={active ? "true" : "false"}
       data-holding={hold.holding ? "true" : "false"}
       aria-label={hold.holding ? `Force quit ${name}` : name}
@@ -1730,16 +1786,69 @@ function DockButton({
   );
 }
 
+const NO_APPS: DeskApp[] = [];
+const NO_GROUPS: DeskBrowser[] = [];
+
+function TabGroup({
+  group,
+  multi,
+  leaving,
+  appIcon,
+  tabIcons,
+  onFocusApp,
+  onFocusTab,
+  onAskClose,
+}: {
+  group: DeskBrowser;
+  multi: boolean;
+  leaving: boolean;
+  appIcon: string;
+  tabIcons: Record<string, string>;
+  onFocusApp: () => void;
+  onFocusTab: (index: number) => void;
+  onAskClose: (tab: DeskTab) => void;
+}) {
+  const tabs = useExiting(group.tabs, (tab) => tab.key);
+  return (
+    <div className="tab-group" data-front={group.front ? "true" : "false"} data-multi={multi ? "true" : "false"} data-leaving={leaving ? "true" : "false"}>
+      {multi ? (
+        <button type="button" className="tab-group-head" aria-label={`Switch to ${group.name}`} onClick={onFocusApp}>
+          {/* eslint-disable-next-line @next/next/no-img-element -- Runtime data URL from the Mac. */}
+          {appIcon ? <img src={`data:image/png;base64,${appIcon}`} alt="" draggable={false} /> : group.name.slice(0, 1)}
+        </button>
+      ) : null}
+      {group.tabError ? <p className="tab-note">{group.tabError}</p> : null}
+      {tabs.map(({ key, item: tab, leaving: tabLeaving }) => {
+        const shared = tab.host ? group.tabs.filter((other) => other.host === tab.host).length : 0;
+        const icon = tab.host && shared === 1 ? tabIcons[tab.host] ?? "" : "";
+        return (
+          <TabButton
+            key={key}
+            title={tab.title}
+            icon={icon}
+            active={tab.active}
+            leaving={tabLeaving}
+            onOpen={() => onFocusTab(tab.index)}
+            onAskClose={() => onAskClose(tab)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 function TabButton({
   title,
   icon,
   active,
+  leaving,
   onOpen,
   onAskClose,
 }: {
   title: string;
   icon: string;
   active: boolean;
+  leaving: boolean;
   onOpen: () => void;
   onAskClose: () => void;
 }) {
@@ -1747,10 +1856,11 @@ function TabButton({
   return (
     <button
       type="button"
+      data-leaving={leaving ? "true" : "false"}
       data-on={active ? "true" : "false"}
       data-holding={hold.holding ? "true" : "false"}
       data-icon={icon ? "true" : "false"}
-      aria-label={hold.holding ? `Close ${title}` : title}
+      aria-label={title}
       title={title}
       {...hold.props}
       onClick={() => {
@@ -1759,7 +1869,7 @@ function TabButton({
       }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- Runtime data URL fetched by the local agent. */}
-      {icon ? <img src={icon} alt="" draggable={false} /> : hold.holding ? "Close?" : title}
+      {icon ? <img src={icon} alt="" draggable={false} /> : title}
     </button>
   );
 }

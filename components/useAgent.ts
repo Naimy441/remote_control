@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DisplaySize, GyroTune } from "@/lib/gyro";
-import { normalizeToken, roundDelta, type AgentMessage, type DeskApp, type DeskSnapshot, type DeskTab } from "@/lib/remote";
+import { normalizeToken, roundDelta, type AgentMessage, type DeskApp, type DeskBrowser, type DeskSnapshot, type DeskTab } from "@/lib/remote";
 
 export type AgentStatus = "idle" | "connecting" | "open" | "denied" | "replaced" | "closed";
 
@@ -24,6 +24,14 @@ export function useAgent(options: { url: string; token: string; active: boolean;
   const socketRef = useRef<WebSocket | null>(null);
   const openRef = useRef(false);
   const pending = useRef({ dx: 0, dy: 0, sx: 0, sy: 0 });
+  // App icons are only sent once per connection, so keep them here: an app that lingers while quitting must keep its
+  // real icon instead of falling back to its first letter.
+  const iconCache = useRef(new Map<string, string>());
+  // Apps being force-quit stay hidden for a moment, so one that takes a second to disappear does not flash back.
+  const hiddenApps = useRef(new Map<string, number>());
+  const hideApp = useCallback((id: string, ms = 3000) => {
+    hiddenApps.current.set(id, Date.now() + ms);
+  }, []);
   const pingId = useRef(0);
   const pingSent = useRef(0);
 
@@ -140,6 +148,7 @@ export function useAgent(options: { url: string; token: string; active: boolean;
           browser?: DeskSnapshot["browser"];
           apps?: DeskApp[];
           tabs?: DeskTab[];
+          browsers?: DeskBrowser[];
           tabCount?: number;
           tabError?: string;
         };
@@ -151,7 +160,9 @@ export function useAgent(options: { url: string; token: string; active: boolean;
         if (message.type === "desk" && Array.isArray(message.apps)) {
           const icons = message.tabIcons;
           if (icons && Object.keys(icons).length) setTabIcons((current) => ({ ...current, ...icons }));
-          const apps = message.apps;
+          for (const app of message.apps) if (app.icon) iconCache.current.set(app.id, app.icon);
+          const now = Date.now();
+          const apps = message.apps.filter((app) => (hiddenApps.current.get(app.id) ?? 0) < now);
           setDesk((current) => {
             const known = new Map((current?.apps ?? []).map((app) => [app.id, app.icon || ""]));
             return {
@@ -160,10 +171,26 @@ export function useAgent(options: { url: string; token: string; active: boolean;
               tabCount: message.tabCount || message.tabs?.length || 0,
               tabError: message.tabError || "",
               tabs: Array.isArray(message.tabs) ? message.tabs : [],
+              // An agent from before per-browser tab lists only sends the front browser's tabs; wrap them the same way.
+              browsers: Array.isArray(message.browsers)
+                ? message.browsers
+                : message.browser
+                  ? [
+                      {
+                        kind: message.browser,
+                        id: message.front || "",
+                        name: apps.find((app) => app.id === message.front)?.name ?? "",
+                        front: true,
+                        tabs: Array.isArray(message.tabs) ? message.tabs : [],
+                        tabCount: message.tabCount || message.tabs?.length || 0,
+                        tabError: message.tabError || "",
+                      },
+                    ]
+                  : [],
               apps: apps.map((app) => ({
                 id: app.id,
                 name: app.name,
-                icon: app.icon || known.get(app.id) || "",
+                icon: app.icon || iconCache.current.get(app.id) || known.get(app.id) || "",
               })),
             };
           });
@@ -264,5 +291,5 @@ export function useAgent(options: { url: string; token: string; active: boolean;
     };
   }, [active, generation, token, url]);
 
-  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, protocol, tune, display, tabIcons, macClipboard, error, send, desk, setDesk };
+  return { status, trusted, rtt, battery, volume, setVolume, playing, setPlaying, protocol, tune, display, tabIcons, macClipboard, error, send, hideApp, desk, setDesk };
 }

@@ -110,6 +110,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .remote {
   position: fixed;
   inset: 0;
+  /* The keyboard sets --app-h; animating height lets the trackpad shrink and grow smoothly. */
+  height: var(--app-h, 100%);
+  transition: height 0.38s cubic-bezier(0.2, 0.8, 0.2, 1);
   display: flex;
   flex-direction: column;
   padding-top: env(safe-area-inset-top);
@@ -481,7 +484,12 @@ input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bo
 
 .tab-note { flex: none; margin: 0; color: var(--text-3); font-size: 12px; line-height: 1.3; }
 
-.dock { padding: 2px 0; }
+/* Right to left: the most recent app sits at the right edge, under the thumb, and older apps run off to the left. */
+.dock { padding: 2px 0; direction: rtl; }
+.dock button { direction: ltr; }
+/* Web tabs run right to left too, with the active side under the thumb. */
+.tab-row { direction: rtl; }
+.tab-row button, .tab-row .tab-note { direction: ltr; }
 .dock button {
   width: 66px;
   min-height: 0;
@@ -681,8 +689,10 @@ input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bo
 }
 
 /* ---------- Keyboard open: make room ---------- */
-.remote[data-keyboard="open"] .click-row .seg:first-child,
-.remote[data-keyboard="open"] .tab-row { display: none; }
+/* With the keyboard up, every control stays reachable and the trackpad gives up its height instead. */
+.remote[data-keyboard="open"] .remote-stage { min-height: 84px; padding-bottom: 4px; }
+.remote[data-keyboard="open"] .hint { display: none; }
+.remote[data-keyboard="open"] .remote-base { padding-bottom: 6px; }
 
 /* ---------- Motion ---------- */
 @keyframes dot-pulse { 50% { opacity: 0.35; transform: scale(0.8); } }
@@ -817,7 +827,10 @@ input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bo
 }
 
 /* Hide it while the phone keyboard is open; the compressed layout does not suit it. */
-.remote[data-keyboard="open"] .quick-rail { opacity: 0; pointer-events: none; transform: translateX(14px) scale(0.8); }
+/* The rail disappears at once, so only the trackpad is animating while the keyboard comes up... */
+.remote[data-keyboard="open"] .quick-rail { opacity: 0; visibility: hidden; pointer-events: none; transition: none; }
+/* ...and it fades back in only after the trackpad has finished growing again. */
+.remote[data-keyboard="closed"] .quick-rail { transition-delay: 0s, 0.32s; }
 .remote[data-keyboard="open"] .quick-scroll { pointer-events: none; }
 
 /* A soft wash that lifts from the edge, strongest around the middle slot, never a hard shape. */
@@ -1054,3 +1067,91 @@ input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border: 0; bo
 .sp-card .icon-button > svg { width: 18px; height: 18px; }
 
 .display-info { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; color: var(--text-2); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+
+/* ---------- Handedness ---------- */
+.hand-seg > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 14.5px;
+  font-weight: 500;
+}
+.hand-seg > button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Left-handed: the dock and tabs start from the left, and the quick rail moves to the left edge. */
+.remote[data-hand="left"] .dock,
+.remote[data-hand="left"] .tab-row { direction: ltr; }
+
+.remote[data-hand="left"] .quick-rail {
+  right: auto;
+  left: 9px;
+  transform: translateX(-4px) scale(0.8);
+  transform-origin: left center;
+}
+.remote[data-hand="left"] .quick-rail[data-awake="true"] { transform: none; }
+.remote[data-hand="left"] .quick-surface {
+  border-radius: 25px 0 0 25px;
+  background:
+    radial-gradient(ellipse 100% 14% at 0% 50%, rgba(255, 255, 255, 0.05), transparent 100%),
+    linear-gradient(
+      to right,
+      rgba(255, 255, 255, 0.056),
+      rgba(255, 255, 255, 0.038) 25%,
+      rgba(255, 255, 255, 0.019) 55%,
+      rgba(255, 255, 255, 0.005) 80%,
+      transparent
+    );
+  -webkit-mask-image: radial-gradient(ellipse 100% 60% at 0% 50%, #000 22%, transparent 100%);
+  mask-image: radial-gradient(ellipse 100% 60% at 0% 50%, #000 22%, transparent 100%);
+}
+
+/* ---------- Tab groups (one per browser) ---------- */
+.tab-group { display: flex; flex: none; align-items: center; gap: 6px; }
+.tab-group[data-multi="true"] + .tab-group,
+.tab-group[data-multi="true"] ~ .tab-group { margin-inline-start: 4px; padding-inline-start: 10px; border-inline-start: 1px solid var(--line-2); }
+/* Scoped under .tab-row so it beats the generic tab-pill button rules, which add side padding. */
+.tab-row .tab-group-head {
+  flex: none;
+  width: 38px;
+  max-width: none;
+  min-height: 36px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  overflow: visible;
+  direction: ltr;
+}
+.tab-row .tab-group-head img { width: 26px; height: 26px; flex: none; border-radius: 7px; pointer-events: none; -webkit-touch-callout: none; }
+
+/* ---------- Exit animations: a closed browser, its tabs, and its dock icon shrink away ---------- */
+.tab-group { max-width: 1200px; }
+.tab-group[data-leaving="true"] {
+  overflow: hidden;
+  pointer-events: none;
+  animation: group-out 0.34s var(--ease-out) forwards;
+}
+@keyframes group-out {
+  to { max-width: 0; opacity: 0; margin-inline-start: -6px; padding-inline-start: 0; border-inline-start-width: 0; }
+}
+
+.tab-row button[data-leaving="true"] {
+  pointer-events: none;
+  animation: tab-out 0.3s var(--ease-out) forwards;
+}
+@keyframes tab-out {
+  to { width: 0; min-width: 0; max-width: 0; padding-inline: 0; margin-inline-end: -6px; opacity: 0; scale: 0.6; border-width: 0; }
+}
+
+.dock button[data-leaving="true"] {
+  pointer-events: none;
+  overflow: hidden;
+  animation: dock-out 0.32s var(--ease-out) forwards;
+}
+@keyframes dock-out {
+  to { width: 0; padding-inline: 0; margin-inline-end: -6px; opacity: 0; scale: 0.5; }
+}

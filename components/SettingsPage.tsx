@@ -2,6 +2,7 @@
 
 import {
   AppWindow,
+  ArrowLeftRight,
   ArrowUpDown,
   Cable,
   ChevronDown,
@@ -14,6 +15,9 @@ import {
   Mouse,
   MousePointer2,
   Move3d,
+  PanelLeft,
+  PanelTop,
+  PanelRight,
   RefreshCw,
   RotateCcw,
   SlidersHorizontal,
@@ -108,6 +112,10 @@ export type SettingsPageProps = {
   onResetGyro: () => void;
   quick: QuickId[];
   onQuick: (ids: QuickId[]) => void;
+  leftHanded: boolean;
+  onLeftHanded: (value: boolean) => void;
+  allTabs: boolean;
+  onAllTabs: (value: boolean) => void;
 };
 
 export function SettingsPage(props: SettingsPageProps) {
@@ -148,7 +156,7 @@ export function SettingsPage(props: SettingsPageProps) {
           <Heading icon={Mouse}>Pointer and scroll</Heading>
           <Slider icon={MousePointer2} label="Pointer speed" value={props.sens} min={0.4} max={4} step={0.1} onChange={props.onSens} />
           <Slider icon={ArrowUpDown} label="Scroll speed" value={props.scrollSens} min={0.5} max={8} step={0.1} onChange={props.onScrollSens} />
-          <p className="fine">Pinch zooms the active app. The grid button opens Mission Control.</p>
+          <p className="fine">Pinch zooms the active app.</p>
         </section>
 
         <section className="sp-card">
@@ -162,8 +170,32 @@ export function SettingsPage(props: SettingsPageProps) {
         </section>
 
         <section className="sp-card">
+          <Heading icon={ArrowLeftRight}>Handedness</Heading>
+          <div className="seg hand-seg" role="group" aria-label="Which hand you use">
+            <button type="button" data-on={props.leftHanded ? "false" : "true"} aria-pressed={!props.leftHanded} onClick={() => props.onLeftHanded(false)}>
+              <PanelRight aria-hidden="true" />
+              Right-handed
+            </button>
+            <button type="button" data-on={props.leftHanded ? "true" : "false"} aria-pressed={props.leftHanded} onClick={() => props.onLeftHanded(true)}>
+              <PanelLeft aria-hidden="true" />
+              Left-handed
+            </button>
+          </div>
+          <p className="fine">Moves the quick buttons, dock and tabs to the left.</p>
+        </section>
+
+        <section className="sp-card">
+          <Heading icon={PanelTop}>Web tabs</Heading>
+          <button type="button" data-on={props.allTabs ? "true" : "false"} aria-pressed={props.allTabs} onClick={() => props.onAllTabs(!props.allTabs)}>
+            <Globe aria-hidden="true" />
+            Always show web tabs
+          </button>
+          <p className="fine">Keep tabs showing for every open browser.</p>
+        </section>
+
+        <section className="sp-card">
           <Heading icon={Zap}>Quick buttons</Heading>
-          <p className="fine">These sit on the side of the trackpad, five at a time, with the outer ones faded. Swipe the rail up and down to flip through the rest.</p>
+          <p className="fine">Shown at the trackpad edge. Swipe to see more.</p>
 
           {quick.length ? (
             <ol className="qe-list">

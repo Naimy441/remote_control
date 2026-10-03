@@ -134,6 +134,8 @@ function sanitize(message) {
         return { op: "clipboard", action: "write", text: message.text };
       }
       return null;
+    case "prefs":
+      return { op: "prefs", allTabs: Boolean(message.allTabs) };
     case "tab":
     case "closetab":
       if (message.browser !== "chromium" && message.browser !== "safari" && message.browser !== "firefox") return null;
@@ -162,6 +164,7 @@ let deskBusy = false;
 let deskQueued = false;
 let deskTimer = null;
 let latestDesk = null;
+let wantAllTabs = false;
 let battery = null;
 let batteryTimer = null;
 let volume = null;
@@ -481,7 +484,7 @@ function sendDesk(ws, payload) {
   });
   const knownTab = ws.knownTabIcons ?? (ws.knownTabIcons = new Set());
   const tabIcons = {};
-  for (const tab of payload.tabs) {
+  for (const tab of payload.browsers.flatMap((entry) => entry.tabs)) {
     const icon = tab.host ? cachedFavicon(tab.host) : "";
     if (icon && !knownTab.has(tab.host)) {
       knownTab.add(tab.host);
@@ -494,6 +497,7 @@ function sendDesk(ws, payload) {
     front: payload.front,
     browser: payload.browser,
     apps,
+    browsers: payload.browsers,
     tabs: payload.tabs,
     tabCount: payload.tabCount || payload.tabs.length,
     tabError: payload.tabError,
@@ -514,35 +518,55 @@ async function refreshDesk() {
       try {
         const snap = await askDesk({ op: "snapshot" });
         if (!active || seen !== deskEpoch) continue;
-        const browser = browserKind(snap.front);
-        let tabs = [];
-        let tabError = "";
-        if (browser) {
-          try {
-            tabs = await listTabs(browser);
-          } catch (error) {
-            if (automationDenied(error)) {
-              tabError = `Allow this Mac to control ${browserName(browser)} in System Settings → Privacy & Security → Automation.`;
+        const frontId = typeof snap.front === "string" ? snap.front : "";
+        const frontKind = browserKind(frontId);
+        // Most recently used first; the browser groups below follow the same order as the dock.
+        const appList = orderByRecent(Array.isArray(snap.apps) ? snap.apps : [], frontId);
+        // Normally only the browser in front gets a tab list. With "always show web tabs" every running browser does.
+        const wanted = appList
+          .filter((app) => browserKind(app.id) && (wantAllTabs || browserKind(app.id) === frontKind));
+        const browsers = await Promise.all(
+          wanted.map(async (app) => {
+            const kind = browserKind(app.id);
+            let tabs = [];
+            let tabError = "";
+            try {
+              tabs = await listTabs(kind);
+            } catch (error) {
+              if (automationDenied(error)) {
+                tabError = `Allow this Mac to control ${browserName(kind)} in System Settings → Privacy & Security → Automation.`;
+              }
             }
-          }
-        }
+            return {
+              kind,
+              id: app.id,
+              name: app.name,
+              front: app.id === frontId,
+              tabs: tabs.map((tab) => ({
+                key: `${kind}:${tab.index}`,
+                index: tab.index,
+                title: tab.title,
+                active: Boolean(tab.active),
+                host: tab.host || "",
+              })),
+              tabCount: tabs.total || tabs.length,
+              tabError,
+            };
+          }),
+        );
         if (!active || seen !== deskEpoch) continue;
+        const frontBrowser = browsers.find((entry) => entry.front);
         latestDesk = {
-          front: typeof snap.front === "string" ? snap.front : "",
-          browser,
-          apps: orderByRecent(Array.isArray(snap.apps) ? snap.apps : [], typeof snap.front === "string" ? snap.front : ""),
-          tabs: tabs.map((tab) => ({
-            key: `${browser}:${tab.index}`,
-            index: tab.index,
-            title: tab.title,
-            active: Boolean(tab.active),
-            host: tab.host || "",
-          })),
-          tabCount: tabs.total || tabs.length,
-          tabError,
+          front: frontId,
+          browser: frontKind,
+          apps: appList,
+          browsers,
+          tabs: frontBrowser?.tabs ?? [],
+          tabCount: frontBrowser?.tabCount ?? 0,
+          tabError: frontBrowser?.tabError ?? "",
         };
         sendDesk(active, latestDesk);
-        const hosts = latestDesk.tabs.map((tab) => tab.host).filter(Boolean);
+        const hosts = latestDesk.browsers.flatMap((entry) => entry.tabs.map((tab) => tab.host)).filter(Boolean);
         if (hosts.length) {
           void loadFavicons(hosts).then((changed) => {
             if (changed && active && latestDesk) sendDesk(active, latestDesk);
@@ -611,6 +635,8 @@ async function quitApp(bundle) {
     console.error(error instanceof Error ? error.message : error);
   }
   void refreshDesk();
+  // Big apps can take a moment to leave the running list; look again so the dock does not keep a stale icon.
+  for (const delay of [800, 1800]) setTimeout(() => void refreshDesk(), delay);
 }
 
 async function closeTabNow(message) {
@@ -780,6 +806,14 @@ wss.on("connection", (ws) => {
     }
     if (clean.op === "tab") {
       void focusTab(clean);
+      return;
+    }
+    if (clean.op === "prefs") {
+      if (wantAllTabs !== clean.allTabs) {
+        wantAllTabs = clean.allTabs;
+        deskEpoch += 1;
+        void refreshDesk();
+      }
       return;
     }
     if (clean.op === "closetab") {
