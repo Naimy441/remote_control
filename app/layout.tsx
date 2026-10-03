@@ -20,9 +20,12 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: "Remote",
-    statusBarStyle: "black-translucent",
+    statusBarStyle: "black",
   },
   formatDetection: { telephone: false },
+  // Next only emits the generic mobile-web-app-capable tag; iOS reads this Apple one when deciding to extend the
+  // page under the status bar and home indicator for a Home Screen app.
+  other: { "apple-mobile-web-app-capable": "yes" },
 };
 
 export const viewport: Viewport = {

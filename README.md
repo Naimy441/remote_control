@@ -36,6 +36,23 @@ No Apple certificate? Run `npm run setup-signing` once. It creates a self-signed
 
 Firefox, Chrome, and Safari tab switching may also ask for Automation permission under Privacy & Security → Automation.
 
+## Add it to your Home Screen
+
+You get a noticeably better experience if you run the page as a Home Screen app instead of a Safari tab:
+
+- **Full screen.** Safari's address bar and toolbar disappear, so the trackpad gets that space too, and nothing slides in over the controls.
+- **Fewer accidents.** There is no Safari toolbar to tap by mistake and no page to pull down or swipe away.
+- **Opens like an app.** One tap from the Home Screen, with its own icon and entry in the app switcher.
+- **Remembers you.** The agent address, token, settings and quick buttons are kept for the app, so you connect once.
+
+On the iPhone, open the `https://` link from the Mac in Safari, tap **Share**, then **Add to Home Screen**, and launch it from the new icon. The Home Screen app keeps its own storage, so open the link with the token (`…/#t=TOKEN`) once from the icon, or enter the address and token under Settings.
+
+Notes:
+
+- iOS reads the page's app settings (status bar style and the like) when you add the icon. If the layout ever looks off after an update, delete the icon and add it again.
+- Dictation can be limited in Home Screen apps. When it is, the mic button opens the keyboard so you can use the keyboard's own mic key.
+- Settings → Display shows the window, screen and safe-area sizes, which helps when something does not fit the screen.
+
 ## Gestures
 
 The pad tracks at most two fingers, each shown as a glowing ring.
@@ -70,10 +87,15 @@ Everything under the pad is an icon. Left to right, top to bottom:
 | Keys | ⌘, ⌥, ⌃, ⇧ (stay on until tapped again, so ⌘ then C is copy), keyboard, send iPhone clipboard to Mac, copy Mac clipboard to iPhone |
 | Arrows | ← ↑ ↓ → and delete. Hold to repeat. |
 | Mouse | Left click, right click, drag lock, one-finger scroll, Mission Control, page up (Shift-Space), page down (Space), full screen (Control-Command-F) |
-| Media | Play/pause and a volume slider |
-| Browser | Back, forward, reload, new tab. Shown when Safari, Chrome, or Firefox is in front. |
+| Media and browser | A play/pause button (it shows pause while audio is playing and play when it is not), a volume slider, and back, forward, reload and new tab on the same row. The browser buttons show when Safari, Chrome, or Firefox is in front. |
 
-Tap an app in the dock to switch to it. Hold an app, then confirm, to force quit it. New apps animate in and the dock slides when the order changes. When a browser is in front, its tabs appear above the dock. A tab shows its site icon when no other tab shares that site, otherwise its title; tap to switch, and hold a tab, then confirm, to close it. The agent fetches each icon directly from the site's own `/favicon.ico` (or page icon link) and caches it. Firefox tabs switch by position with Cmd+1/Cmd+9 and Cmd+Option+Arrow, and its list comes from Firefox's session file, which Firefox refreshes about every 15 seconds. The gear at the top opens connection, pointer speed, and scroll speed settings.
+The microphone button next to the keyboard dictates into whatever is focused on the Mac. It uses the browser's speech recognition (Safari on iPhone) over HTTPS, shows a live preview of the latest words it hears at the bottom of the pad, and types each finished phrase on the Mac as plain text, even if a modifier is toggled on. It keeps listening through pauses until you tap the mic again, and stops if you leave the page or lose the connection. If speech recognition is unavailable or blocked (it can be limited in Home Screen web apps), it opens the keyboard so you can use the keyboard's own mic key, which also types on the Mac.
+
+**Settings** (the gear on the trackpad) opens as a full page with sections for the connection, pointer and scroll speed, the gyro pointer, and quick buttons.
+
+**Quick buttons** are a rail of round buttons on the right edge of the trackpad. By default it holds keyboard, dictate, enter and scroll lock. Five show at a time, the outer ones smaller and faded so it is clear there are more; swipe the rail to bring the others in. At rest the rail shrinks and tucks against the edge, and it grows back while you touch or scroll it. It hides while the phone keyboard is open. In Settings → Quick buttons you can add, remove and reorder the buttons the app already has: keyboard, dictate, enter, backspace, scroll lock, left and right click, drag lock, Mission Control, full screen, page up and down, play/pause, and the browser back, forward, reload and new tab buttons. The list is saved on the phone.
+
+The dock lists your open apps with the most recently used first, so the app you were just in is always at the left. Tap an app in the dock to switch to it. Hold an app, then confirm, to force quit it. New apps animate in and the dock slides when the order changes. When a browser is in front, its tabs appear above the dock. A tab shows its site icon when no other tab shares that site, otherwise its title; tap to switch, and hold a tab, then confirm, to close it. The agent fetches each icon directly from the site's own `/favicon.ico` (or page icon link) and caches it. Firefox tabs switch by position with Cmd+1/Cmd+9 and Cmd+Option+Arrow, and its list comes from Firefox's session file, which Firefox refreshes about every 15 seconds. The gear at the top opens connection, pointer speed, and scroll speed settings.
 
 Mission Control runs `open -a "Mission Control"` on the Mac, which works even when the Control-Up keyboard shortcut is not set up.
 

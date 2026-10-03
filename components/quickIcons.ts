@@ -1,0 +1,42 @@
+import {
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
+  CornerDownLeft,
+  Delete,
+  Grab,
+  Keyboard,
+  LayoutGrid,
+  Maximize,
+  Mic,
+  MousePointerClick,
+  Play,
+  Plus,
+  RotateCw,
+  SquareMenu,
+  type LucideIcon,
+} from "lucide-react";
+import type { QuickId } from "@/lib/quick";
+
+export const quickIcons: Record<QuickId, LucideIcon> = {
+  keyboard: Keyboard,
+  dictate: Mic,
+  enter: CornerDownLeft,
+  backspace: Delete,
+  scroll: ArrowUpDown,
+  leftClick: MousePointerClick,
+  rightClick: SquareMenu,
+  dragLock: Grab,
+  mission: LayoutGrid,
+  fullscreen: Maximize,
+  pageUp: ChevronsUp,
+  pageDown: ChevronsDown,
+  playPause: Play,
+  back: ChevronLeft,
+  forward: ChevronRight,
+  reload: RotateCw,
+  newTab: Plus,
+};
+

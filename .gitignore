@@ -46,3 +46,4 @@ next-env.d.ts
 /agent/bin/
 /agent/tune.json
 /agent/calibration/
+/agent/recent-apps.json

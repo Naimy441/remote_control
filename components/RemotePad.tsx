@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   browserKind,
   defaultAgentUrl,
@@ -18,6 +18,7 @@ import {
   ArrowRight,
   ArrowUp,
   ArrowUpDown,
+  CornerDownLeft,
   BatteryCharging,
   BatteryFull,
   BatteryLow,
@@ -25,8 +26,8 @@ import {
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
-  ClipboardCopy,
-  ClipboardPaste,
+  Laptop,
+  Smartphone,
   Delete,
   Grab,
   Keyboard,
@@ -48,13 +49,40 @@ import {
   VolumeX,
   X,
   Check,
+  Mic,
   Move3d,
   Crosshair,
   Hand,
   type LucideIcon,
 } from "lucide-react";
 import { aimAngles, analyzeTremor, calibSteps, type TremorResult, defaultTune, fitTune, MIN_PEAK, OneEuro, wrapDegrees, type CalibStep } from "@/lib/gyro";
+import { ConnectionFields } from "@/components/fields";
+import { QuickRail, type QuickItem } from "@/components/QuickRail";
+import { quickIcons } from "@/components/quickIcons";
+import { SettingsPage } from "@/components/SettingsPage";
+import { defaultQuick, parseQuick, quickMeta, quickStorageKey, type QuickId } from "@/lib/quick";
+import { PressButton } from "@/components/PressButton";
+import { useLast, usePresence } from "@/components/presence";
 import { useAgent, type AgentStatus } from "@/components/useAgent";
+
+type SpeechResultList = ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
+type Recognizer = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: { resultIndex: number; results: SpeechResultList }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+};
+
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => Recognizer;
+    webkitSpeechRecognition?: new () => Recognizer;
+  }
+}
 
 type Session = { url: string; token: string; generation: number };
 
@@ -95,6 +123,12 @@ export default function RemotePad() {
   const tuneRef = useRef(defaultTune);
   const calibMode = useRef(false);
   const calibAcc = useRef<{ az0: number; el0: number; peakX: number; peakY: number; rows: number[][] } | null>(null);
+  const [quickIds, setQuickIds] = useState<QuickId[]>(defaultQuick);
+  const [quickReady, setQuickReady] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const recRef = useRef<Recognizer | null>(null);
+  const wantRef = useRef(false);
   const tremorRec = useRef<number[][] | null>(null);
   const tremorTimer = useRef(0);
   const [tremor, setTremor] = useState<{
@@ -116,7 +150,8 @@ export default function RemotePad() {
   const [toast, setToast] = useState("");
   const [playOverride, setPlayOverride] = useState<boolean | null>(null);
   const playTimer = useRef(0);
-  const settleUntil = useRef(0);
+  const settling = useRef(false);
+  const settleTimer = useRef(0);
   const toastTimer = useRef(0);
   const [pasteOpen, setPasteOpen] = useState(false);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
@@ -147,6 +182,9 @@ export default function RemotePad() {
     generation: session?.generation ?? 0,
   });
 
+  const showBrowser = Boolean(desk?.browser);
+  const showTabs = Boolean(desk?.browser && (desk.tabs.length > 0 || desk.tabError));
+  const tabDesk = useLast(showTabs ? desk : null);
   const dockIds = desk?.apps.map((app) => app.id).join("|") ?? "";
   useLayoutEffect(() => {
     const dock = dockRef.current;
@@ -178,7 +216,28 @@ export default function RemotePad() {
     dockPos.current = next;
   }, [dockIds]);
 
+  useEffect(() => {
+    // Saved after hydration; localStorage only exists in the browser.
+    const timer = window.setTimeout(() => {
+      const saved = parseQuick(localStorage.getItem(quickStorageKey));
+      if (saved) setQuickIds(saved);
+      setQuickReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!quickReady) return;
+    localStorage.setItem(quickStorageKey, JSON.stringify(quickIds));
+  }, [quickIds, quickReady]);
+
   const isPlaying = playOverride ?? playing ?? false;
+  useEffect(() => {
+    // Once the Mac's audio state catches up with the tap, hand control back to the real state.
+    if (playOverride === null || playing !== playOverride) return;
+    const timer = window.setTimeout(() => setPlayOverride(null), 0);
+    return () => window.clearTimeout(timer);
+  }, [playing, playOverride]);
   const tune = agentTune ?? defaultTune;
   useEffect(() => {
     const timer = tremorTimer.current;
@@ -287,7 +346,7 @@ export default function RemotePad() {
       }
       if (calibMode.current || !display) return;
       // Ignore the jolt of tapping the button, then take the current aim as the screen center.
-      if (now < settleUntil.current) return;
+      if (settling.current) return;
       if (needOrigin.current || !originRef.current) {
         originRef.current = { az, el };
         needOrigin.current = false;
@@ -343,8 +402,15 @@ export default function RemotePad() {
     const fit = () => {
       const viewport = window.visualViewport;
       if (!viewport) return;
-      root.style.height = `${viewport.height}px`;
-      root.style.transform = `translateY(${viewport.offsetTop}px)`;
+      // Only shrink to the visual viewport while the on-screen keyboard is up; otherwise the fixed layout fills the window.
+      const keyboardUp = window.innerHeight - viewport.height > 120;
+      if (keyboardUp) {
+        root.style.height = `${viewport.height}px`;
+        root.style.transform = `translateY(${viewport.offsetTop}px)`;
+      } else {
+        root.style.height = "";
+        root.style.transform = "";
+      }
     };
 
     const blockMove = (event: TouchEvent) => {
@@ -613,7 +679,11 @@ export default function RemotePad() {
   }
 
   function recenter() {
-    settleUntil.current = performance.now() + 450;
+    settling.current = true;
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      settling.current = false;
+    }, 450);
     needOrigin.current = true;
     if (display) send({ op: "moveto", x: display.w / 2, y: display.h / 2 });
   }
@@ -917,6 +987,101 @@ export default function RemotePad() {
     setMods((current) => ({ ...current, [name]: !current[name] }));
   }
 
+  function typeSpoken(text: string) {
+    // Plain text only: held modifiers are ignored, and a trailing space separates phrases.
+    const clean = text.replace(/\s+/g, " ").trimStart();
+    if (!clean.trim()) return;
+    const spaced = clean.endsWith(" ") ? clean : `${clean} `;
+    for (let at = 0; at < spaced.length; at += 400) send({ op: "text", s: spaced.slice(at, at + 400) });
+  }
+
+  function stopDictation() {
+    wantRef.current = false;
+    recRef.current?.stop();
+    recRef.current = null;
+    setListening(false);
+    setInterim("");
+  }
+
+  function startDictation() {
+    const Ctor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    const openKeyboard = (message: string) => {
+      notify(message);
+      inputRef.current?.focus();
+    };
+    if (!Ctor) {
+      openKeyboard("Dictation is not available here. Use the keyboard mic");
+      return;
+    }
+    const rec = new Ctor();
+    rec.lang = navigator.language || "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (event) => {
+      // Finished phrases are typed as they arrive; the preview is everything still in progress.
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) typeSpoken(result[0].transcript);
+      }
+      let partial = "";
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (!result.isFinal) partial += result[0].transcript;
+      }
+      setInterim(partial);
+    };
+    rec.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
+        stopDictation();
+        openKeyboard("Mic or speech access is off. Use the keyboard mic instead");
+      }
+    };
+    rec.onend = () => {
+      // Safari ends a session after a pause; keep listening until the user stops.
+      if (wantRef.current && recRef.current === rec) {
+        window.setTimeout(() => {
+          if (!wantRef.current || recRef.current !== rec) return;
+          try {
+            rec.start();
+          } catch {
+            stopDictation();
+          }
+        }, 120);
+      } else if (recRef.current === rec) {
+        setListening(false);
+      }
+    };
+    recRef.current = rec;
+    wantRef.current = true;
+    try {
+      rec.start();
+      setListening(true);
+    } catch {
+      stopDictation();
+      openKeyboard("Could not start dictation. Use the keyboard mic");
+    }
+  }
+
+  function toggleDictation() {
+    if (wantRef.current) stopDictation();
+    else startDictation();
+  }
+
+  function toggleKeyboard() {
+    const input = inputRef.current;
+    if (!input) return;
+    if (document.activeElement === input) input.blur();
+    else input.focus();
+  }
+
+  function togglePlay() {
+    const next = !(playOverride ?? playing ?? false);
+    setPlayOverride(next);
+    window.clearTimeout(playTimer.current);
+    playTimer.current = window.setTimeout(() => setPlayOverride(null), 6000);
+    send({ op: "media", action: "toggle" });
+  }
+
   function tapKey(name: string) {
     send({ op: "key", name, down: true });
     send({ op: "key", name, down: false });
@@ -950,6 +1115,24 @@ export default function RemotePad() {
     send({ op: "text", s: text });
   }
 
+  useEffect(() => {
+    const stop = () => {
+      wantRef.current = false;
+      recRef.current?.stop();
+      recRef.current = null;
+      setListening(false);
+      setInterim("");
+    };
+    if (status !== "open") stop();
+    const onHide = () => {
+      if (document.hidden) stop();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => document.removeEventListener("visibilitychange", onHide);
+  }, [status]);
+
+  const dictationPresence = usePresence(listening);
+  const interimText = useLast(interim);
   const toastPresence = usePresence(Boolean(toast));
   const toastText = useLast(toast);
   const calibPresence = usePresence(calib !== null, 260);
@@ -964,59 +1147,46 @@ export default function RemotePad() {
   const quitAskView = useLast(pendingQuit);
   const hintPresence = usePresence(hint, 400);
 
+  const quickActions: Record<QuickId, () => void> = {
+    keyboard: toggleKeyboard,
+    dictate: toggleDictation,
+    enter: () => tapKey("return"),
+    backspace: () => tapKey("delete"),
+    scroll: toggleScrollMode,
+    leftClick: () => send({ op: "click", button: "left", count: 1 }),
+    rightClick: () => send({ op: "click", button: "right", count: 1 }),
+    dragLock: () => setDragLock((value) => !value),
+    mission: () => send({ op: "workspace", action: "mission-control" }),
+    fullscreen: () => send({ op: "fullscreen" }),
+    pageUp: () => tapPlain("space", true),
+    pageDown: () => tapPlain("space", false),
+    playPause: togglePlay,
+    back: () => send({ op: "browse", action: "back" }),
+    forward: () => send({ op: "browse", action: "forward" }),
+    reload: () => send({ op: "browse", action: "reload" }),
+    newTab: () => send({ op: "browse", action: "newtab" }),
+  };
+  const quickActive: Partial<Record<QuickId, boolean>> = {
+    keyboard: keyboard,
+    dictate: listening,
+    scroll: scrollMode,
+    dragLock,
+    playPause: isPlaying,
+  };
+  const quickItems: QuickItem[] = quickIds.map((id) => ({
+    id,
+    label: quickMeta[id].label,
+    icon: id === "playPause" && isPlaying ? Pause : quickIcons[id],
+    active: Boolean(quickActive[id]),
+    repeat: id === "backspace",
+    onPress: quickActions[id],
+  }));
+
   const message = formError || error;
   const connected = status === "open";
 
   return (
     <div className="remote" id="remote-app" ref={rootRef} data-keyboard={keyboard ? "open" : "closed"}>
-      <header className="remote-top">
-        <div className="status">
-          <span className="status-dot" data-on={status} />
-          <span>{labelFor(status)}</span>
-          {connected && rtt !== null ? <span className={rtt > 60 ? "rtt slow" : "rtt"}>{rtt} ms</span> : null}
-        </div>
-        <div className="top-side">
-          {connected && battery ? (
-            <span
-              className="battery"
-              data-charging={battery.charging ? "true" : "false"}
-              data-low={!battery.charging && battery.percent <= 20 ? "true" : "false"}
-              aria-label={`Mac battery ${battery.percent} percent${battery.charging ? ", charging" : ""}`}
-            >
-              <BatteryIcon percent={battery.percent} charging={battery.charging} />
-              {battery.percent}%
-            </span>
-          ) : null}
-          {session && gyro ? (
-            <button type="button" className="icon-button" aria-label="Recenter pointer" onClick={recenter}>
-              <Crosshair />
-            </button>
-          ) : null}
-          {session ? (
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Gyro pointer"
-              aria-pressed={gyro}
-              data-on={gyro ? "true" : "false"}
-              onClick={() => void toggleGyro()}
-            >
-              <Move3d />
-            </button>
-          ) : null}
-          {session ? (
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={settingsOpen ? "Close settings" : "Settings"}
-              onClick={() => setSettingsOpen((open) => !open)}
-              aria-expanded={settingsOpen}
-            >
-              {settingsOpen ? <X /> : <Settings />}
-            </button>
-          ) : null}
-        </div>
-      </header>
 
       {connected && trusted === false ? (
         <p className="warn">Allow RemoteInput in System Settings → Privacy & Security → Accessibility, then restart the Mac command.</p>
@@ -1024,16 +1194,65 @@ export default function RemotePad() {
       {session && message ? <p className="warn">{message}</p> : null}
 
       <main className="remote-stage">
+        <header className="remote-top">
+          <div className="status" data-state={status}>
+            <span className="status-dot" data-on={status} />
+            <span>{labelFor(status)}</span>
+            {connected && rtt !== null ? <span className={rtt > 60 ? "rtt slow" : "rtt"}>{rtt} ms</span> : null}
+          </div>
+          <div className="top-side">
+            {connected && battery ? (
+              <span
+                className="battery"
+                data-charging={battery.charging ? "true" : "false"}
+                data-low={!battery.charging && battery.percent <= 20 ? "true" : "false"}
+                aria-label={`Mac battery ${battery.percent} percent${battery.charging ? ", charging" : ""}`}
+              >
+                <BatteryIcon percent={battery.percent} charging={battery.charging} />
+                {battery.percent}%
+              </span>
+            ) : null}
+            {session && gyro ? (
+              <button type="button" className="icon-button" aria-label="Recenter pointer" onClick={recenter}>
+                <Crosshair />
+              </button>
+            ) : null}
+            {session ? (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Gyro pointer"
+                aria-pressed={gyro}
+                data-on={gyro ? "true" : "false"}
+                onClick={() => void toggleGyro()}
+              >
+                <Move3d />
+              </button>
+            ) : null}
+            {session ? (
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={settingsOpen ? "Close settings" : "Settings"}
+                onClick={() => setSettingsOpen((open) => !open)}
+                aria-expanded={settingsOpen}
+              >
+                {settingsOpen ? <X /> : <Settings />}
+              </button>
+            ) : null}
+          </div>
+        </header>
+
         {!booted ? null : !session ? (
           <form className="setup" onSubmit={connect}>
             <div>
               <h1>Control this Mac</h1>
-              <p>Open the link printed by the Mac. Drag moves the pointer, tap clicks, and two fingers scroll.</p>
+              <p>Open the link printed on the Mac, or enter its address and token below.</p>
             </div>
             <ConnectionFields agentUrl={agentUrl} token={token} onUrl={setAgentUrl} onToken={setToken} />
             {message ? <p className="warn flat">{message}</p> : null}
             <button type="submit" className="primary">Connect</button>
-            <p className="fine">Add this page to your Home Screen so it opens full screen. Page down sends the space bar.</p>
+            <p className="fine">Add this page to your Home Screen so it opens full screen.</p>
           </form>
         ) : (
           <div className="remote-pad" ref={padRef} role="application" aria-label="Trackpad" data-mode={gyro ? "gyro" : scrollMode ? "scroll" : "move"}>
@@ -1048,6 +1267,18 @@ export default function RemotePad() {
             ) : null}
           </div>
         )}
+        {session ? <QuickRail items={quickItems} /> : null}
+        {dictationPresence.mounted ? (
+          <div className="dictation" role="status" data-state={dictationPresence.state}>
+            <span className="dictation-dot" aria-hidden="true" />
+            <div className="dictation-words" aria-live="polite">
+              {dictationWords(interim || interimText).map(({ word, index, last }) => (
+                <span key={index} data-last={last ? "true" : "false"}>{word}</span>
+              ))}
+              {!(interim || interimText) ? <span className="dictation-idle">Listening…</span> : null}
+            </div>
+          </div>
+        ) : null}
         {toastPresence.mounted ? (
           <div className="toast" role="status" data-state={toastPresence.state}>
             <Check />
@@ -1137,48 +1368,33 @@ export default function RemotePad() {
             </div>
           </section>
         ) : null}
-        {settingsPresence.mounted ? (
-          <section className="sheet" data-scroll data-state={settingsPresence.state}>
-            <h2>Settings</h2>
-            <ConnectionFields agentUrl={agentUrl} token={token} onUrl={setAgentUrl} onToken={setToken} />
-            <Slider label="Pointer" value={sens} min={0.4} max={4} step={0.1} onChange={setSens} />
-            <Slider label="Scroll" value={scrollSens} min={0.5} max={8} step={0.1} onChange={setScrollSens} />
-            <Slider label="Gyro" value={gyroSens} min={0.3} max={3} step={0.1} onChange={setGyroSens} />
-            <button type="button" onClick={() => void startTremorTest()}>Measure hand tremor</button>
-            <div className="sheet-actions">
-              <button type="button" className="primary" onClick={() => void startCalibration()}>Calibrate gyro</button>
-              <button type="button" onClick={() => send({ op: "tune", tune: defaultTune })}>Reset</button>
-            </div>
-            <p className="fine">Pinch zooms. The grid button opens Mission Control (Control + Up Arrow).</p>
-            <div className="sheet-actions">
-              <button type="button" className="primary" onClick={() => connect()}>Reconnect</button>
-              <button type="button" onClick={() => { setSession(null); setSettingsOpen(false); }}>Disconnect</button>
-            </div>
-          </section>
-        ) : null}
       </main>
 
       {session ? (
         <div className="remote-base">
-          {desk?.browser && (desk.tabs.length > 0 || desk.tabError) ? (
-            <div className="tab-row" data-scroll>
-              {desk.tabError ? <p className="tab-note">{desk.tabError}</p> : null}
-              {desk.tabs.map((tab) => {
-                const shared = tab.host ? desk.tabs.filter((other) => other.host === tab.host).length : 0;
-                const icon = tab.host && shared === 1 ? tabIcons[tab.host] ?? "" : "";
-                return (
-                  <TabButton
-                    key={tab.key}
-                    title={tab.title}
-                    icon={icon}
-                    active={tab.active}
-                    onOpen={() => focusTab(tab.index)}
-                    onAskClose={() => setPendingTab({ index: tab.index, title: tab.title })}
-                  />
-                );
-              })}
+          <div className="fold" data-open={showTabs ? "true" : "false"}>
+            <div className="fold-inner">
+              {tabDesk ? (
+                <div className="tab-row" data-scroll>
+                  {tabDesk.tabError ? <p className="tab-note">{tabDesk.tabError}</p> : null}
+                  {tabDesk.tabs.map((tab) => {
+                    const shared = tab.host ? tabDesk.tabs.filter((other) => other.host === tab.host).length : 0;
+                    const icon = tab.host && shared === 1 ? tabIcons[tab.host] ?? "" : "";
+                    return (
+                      <TabButton
+                        key={tab.key}
+                        title={tab.title}
+                        icon={icon}
+                        active={tab.active}
+                        onOpen={() => focusTab(tab.index)}
+                        onAskClose={() => setPendingTab({ index: tab.index, title: tab.title })}
+                      />
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
           {tabAsk.mounted && tabAskView ? (
             <div className="quit-confirm" data-state={tabAsk.state}>
               <p>Close tab “{tabAskView.title}”?</p>
@@ -1233,55 +1449,71 @@ export default function RemotePad() {
 
       {session ? (
         <footer className="remote-foot">
-          <div className="remote-row mod-row">
-            <PressButton label="Command" pressed={mods.cmd} onPress={() => toggleMod("cmd")}><Command /></PressButton>
-            <PressButton label="Option" pressed={mods.alt} onPress={() => toggleMod("alt")}><Option /></PressButton>
-            <PressButton label="Control" pressed={mods.ctrl} onPress={() => toggleMod("ctrl")}><ChevronUp /></PressButton>
-            <PressButton label="Shift" pressed={mods.shift} onPress={() => toggleMod("shift")}><ArrowBigUp /></PressButton>
-            <button
-              type="button"
-              aria-label="Keyboard"
-              data-keyboard-toggle
-              data-on={keyboard ? "true" : "false"}
-              onClick={() => {
-                const input = inputRef.current;
-                if (!input) return;
-                if (document.activeElement === input) input.blur();
-                else input.focus();
-              }}
-            >
-              <Keyboard />
-            </button>
-            <PressButton label="Send iPhone clipboard to Mac" onPress={() => void sendPhoneClipboard()}><ClipboardPaste /></PressButton>
-            <PressButton label="Copy Mac clipboard to iPhone" onPress={copyMacClipboard}><ClipboardCopy /></PressButton>
+          <div className="deck-line mod-row">
+            <div className="seg" role="group" aria-label="Modifier keys">
+              <PressButton label="Command" pressed={mods.cmd} onPress={() => toggleMod("cmd")}><Command /></PressButton>
+              <PressButton label="Option" pressed={mods.alt} onPress={() => toggleMod("alt")}><Option /></PressButton>
+              <PressButton label="Control" pressed={mods.ctrl} onPress={() => toggleMod("ctrl")}><ChevronUp /></PressButton>
+              <PressButton label="Shift" pressed={mods.shift} onPress={() => toggleMod("shift")}><ArrowBigUp /></PressButton>
+            </div>
+            <div className="seg" role="group" aria-label="Clipboard">
+              <PressButton label="Send iPhone clipboard to Mac" onPress={() => void sendPhoneClipboard()}>
+                <span className="bridge"><Smartphone /><ArrowRight /><Laptop /></span>
+              </PressButton>
+              <PressButton label="Copy Mac clipboard to iPhone" onPress={copyMacClipboard}>
+                <span className="bridge"><Laptop /><ArrowRight /><Smartphone /></span>
+              </PressButton>
+            </div>
           </div>
-          <div className="remote-row">
-            <PressButton label="Left arrow" repeat onPress={() => tapKey("left")}><ArrowLeft /></PressButton>
-            <PressButton label="Up arrow" repeat onPress={() => tapKey("up")}><ArrowUp /></PressButton>
-            <PressButton label="Down arrow" repeat onPress={() => tapKey("down")}><ArrowDown /></PressButton>
-            <PressButton label="Right arrow" repeat onPress={() => tapKey("right")}><ArrowRight /></PressButton>
-            <PressButton label="Delete" repeat onPress={() => tapKey("delete")}><Delete /></PressButton>
+          <div className="deck-line">
+            <div className="seg grow" role="group" aria-label="Arrow keys">
+              <PressButton label="Left arrow" repeat onPress={() => tapKey("left")}><ArrowLeft /></PressButton>
+              <PressButton label="Up arrow" repeat onPress={() => tapKey("up")}><ArrowUp /></PressButton>
+              <PressButton label="Down arrow" repeat onPress={() => tapKey("down")}><ArrowDown /></PressButton>
+              <PressButton label="Right arrow" repeat onPress={() => tapKey("right")}><ArrowRight /></PressButton>
+              <PressButton label="Page up" onPress={() => tapPlain("space", true)}><ChevronsUp /></PressButton>
+              <PressButton label="Page down" onPress={() => tapPlain("space", false)}><ChevronsDown /></PressButton>
+            </div>
+            <div className="seg" role="group" aria-label="Delete and enter">
+              <PressButton label="Delete" repeat onPress={() => tapKey("delete")}><Delete /></PressButton>
+              <PressButton label="Enter" onPress={() => tapKey("return")}><CornerDownLeft /></PressButton>
+            </div>
           </div>
-          <div className="remote-row click-row">
-            <PressButton label="Left click" onPress={() => send({ op: "click", button: "left", count: 1 })}><MousePointerClick /></PressButton>
-            <PressButton label="Right click" onPress={() => send({ op: "click", button: "right", count: 1 })}><SquareMenu /></PressButton>
-            <PressButton label="Drag lock" pressed={dragLock} onPress={() => setDragLock((value) => !value)}><Grab /></PressButton>
-            <PressButton label="One-finger scroll" pressed={scrollMode} onPress={toggleScrollMode}><ArrowUpDown /></PressButton>
-            <PressButton label="Mission Control" onPress={() => send({ op: "workspace", action: "mission-control" })}><LayoutGrid /></PressButton>
-            <PressButton label="Page up" onPress={() => tapPlain("space", true)}><ChevronsUp /></PressButton>
-            <PressButton label="Page down" onPress={() => tapPlain("space", false)}><ChevronsDown /></PressButton>
-            <PressButton label="Full screen" onPress={() => send({ op: "fullscreen" })}><Maximize /></PressButton>
+          <div className="deck-line click-row">
+            <div className="seg grow" role="group" aria-label="Mouse">
+              <PressButton label="Left click" onPress={() => send({ op: "click", button: "left", count: 1 })}><MousePointerClick /></PressButton>
+              <PressButton label="Right click" onPress={() => send({ op: "click", button: "right", count: 1 })}><SquareMenu /></PressButton>
+              <PressButton label="Drag lock" pressed={dragLock} onPress={() => setDragLock((value) => !value)}><Grab /></PressButton>
+              <PressButton label="One-finger scroll" pressed={scrollMode} onPress={toggleScrollMode}><ArrowUpDown /></PressButton>
+            </div>
+            <div className="seg grow" role="group" aria-label="Keyboard and windows">
+              <button
+                type="button"
+                aria-label="Keyboard"
+                data-keyboard-toggle
+                data-on={keyboard ? "true" : "false"}
+                onClick={toggleKeyboard}
+              >
+                <Keyboard />
+              </button>
+              <button
+                type="button"
+                aria-label={listening ? "Stop dictation" : "Dictate"}
+                aria-pressed={listening}
+                data-on={listening ? "true" : "false"}
+                data-listening={listening ? "true" : "false"}
+                onClick={toggleDictation}
+              >
+                <Mic />
+              </button>
+              <PressButton label="Mission Control" onPress={() => send({ op: "workspace", action: "mission-control" })}><LayoutGrid /></PressButton>
+              <PressButton label="Full screen" onPress={() => send({ op: "fullscreen" })}><Maximize /></PressButton>
+            </div>
           </div>
           {connected ? (
-            <section className="media-row" data-playing={isPlaying ? "true" : "false"} aria-label="Media controls">
-              <div className="media-play" inert={!isPlaying}>
-                <PressButton label="Play or pause" onPress={() => {
-                  const next = !(playOverride ?? playing ?? false);
-                  setPlayOverride(next);
-                  window.clearTimeout(playTimer.current);
-                  playTimer.current = window.setTimeout(() => setPlayOverride(null), 2500);
-                  send({ op: "media", action: "toggle" });
-                }}>
+            <section className="media-row" aria-label="Media controls">
+              <div className="media-play">
+                <PressButton label="Play or pause" onPress={togglePlay}>
                   {isPlaying ? <Pause key="pause" /> : <Play key="play" />}
                 </PressButton>
               </div>
@@ -1292,6 +1524,7 @@ export default function RemotePad() {
                   min="0"
                   max="100"
                   value={shownVolume}
+                  style={{ "--v": `${shownVolume}%` } as CSSProperties}
                   onChange={(event) => changeVolume(Number(event.target.value))}
                   onPointerUp={endVolumeDrag}
                   onPointerCancel={endVolumeDrag}
@@ -1299,17 +1532,44 @@ export default function RemotePad() {
                   aria-label="Mac volume"
                 />
               </label>
+              <div className="browse-wrap" data-open={showBrowser ? "true" : "false"} inert={!showBrowser}>
+                <div className="seg browse-seg" role="group" aria-label="Browser">
+                  <PressButton label="Back" onPress={() => send({ op: "browse", action: "back" })}><ChevronLeft /></PressButton>
+                  <PressButton label="Forward" onPress={() => send({ op: "browse", action: "forward" })}><ChevronRight /></PressButton>
+                  <PressButton label="Reload" onPress={() => send({ op: "browse", action: "reload" })}><RotateCw /></PressButton>
+                  <PressButton label="New tab" onPress={() => send({ op: "browse", action: "newtab" })}><Plus /></PressButton>
+                </div>
+              </div>
             </section>
           ) : null}
-          {desk?.browser ? (
-            <div className="remote-row browse-row">
-              <PressButton label="Back" onPress={() => send({ op: "browse", action: "back" })}><ChevronLeft /></PressButton>
-              <PressButton label="Forward" onPress={() => send({ op: "browse", action: "forward" })}><ChevronRight /></PressButton>
-              <PressButton label="Reload" onPress={() => send({ op: "browse", action: "reload" })}><RotateCw /></PressButton>
-              <PressButton label="New tab" onPress={() => send({ op: "browse", action: "newtab" })}><Plus /></PressButton>
-            </div>
-          ) : null}
         </footer>
+      ) : null}
+
+      {settingsPresence.mounted ? (
+        <SettingsPage
+          state={settingsPresence.state}
+          onClose={() => setSettingsOpen(false)}
+          agentUrl={agentUrl}
+          token={token}
+          onUrl={setAgentUrl}
+          onToken={setToken}
+          onReconnect={() => connect()}
+          onDisconnect={() => {
+            setSession(null);
+            setSettingsOpen(false);
+          }}
+          sens={sens}
+          onSens={setSens}
+          scrollSens={scrollSens}
+          onScrollSens={setScrollSens}
+          gyroSens={gyroSens}
+          onGyroSens={setGyroSens}
+          onCalibrate={() => void startCalibration()}
+          onTremor={() => void startTremorTest()}
+          onResetGyro={() => send({ op: "tune", tune: defaultTune })}
+          quick={quickIds}
+          onQuick={setQuickIds}
+        />
       ) : null}
 
       <input
@@ -1376,79 +1636,6 @@ function labelFor(status: AgentStatus) {
     default:
       return "Offline";
   }
-}
-
-function ConnectionFields({
-  agentUrl,
-  token,
-  onUrl,
-  onToken,
-}: {
-  agentUrl: string;
-  token: string;
-  onUrl: (value: string) => void;
-  onToken: (value: string) => void;
-}) {
-  return (
-    <div className="fields">
-      <label>
-        <span>Mac agent</span>
-        <input
-          value={agentUrl}
-          onChange={(event) => onUrl(event.target.value)}
-          placeholder="ws://100.x.x.x:8787"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          inputMode="url"
-        />
-      </label>
-      <label>
-        <span>Token</span>
-        <input
-          value={token}
-          onChange={(event) => onToken(event.target.value.toUpperCase())}
-          placeholder="ABCD-EFGH"
-          autoCapitalize="characters"
-          autoCorrect="off"
-          spellCheck={false}
-          inputMode="text"
-        />
-      </label>
-    </div>
-  );
-}
-
-function Slider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <label className="slider">
-      <span>{label}</span>
-      <strong>{value.toFixed(1)}</strong>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        aria-label={label}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-    </label>
-  );
 }
 
 function useHold(onHold: () => void) {
@@ -1577,6 +1764,13 @@ function TabButton({
   );
 }
 
+/** The latest words with stable keys (their position in the phrase), so only new words animate in. */
+function dictationWords(text: string | null, max = 14) {
+  const words = (text ?? "").split(/\s+/).filter(Boolean);
+  const start = Math.max(0, words.length - max);
+  return words.slice(start).map((word, k) => ({ word, index: start + k, last: start + k === words.length - 1 }));
+}
+
 function CalibArrow({ step }: { step: CalibStep }) {
   const Glyph: LucideIcon = step === "right" ? ArrowRight : step === "left" ? ArrowLeft : step === "up" ? ArrowUp : ArrowDown;
   return <Glyph className="calib-icon" aria-hidden="true" />;
@@ -1592,97 +1786,3 @@ function BatteryIcon({ percent, charging }: { percent: number; charging: boolean
   return <Glyph aria-hidden="true" />;
 }
 
-function PressButton({
-  children,
-  onPress,
-  pressed = false,
-  repeat = false,
-  label,
-}: {
-  children: ReactNode;
-  onPress: () => void;
-  pressed?: boolean;
-  repeat?: boolean;
-  label: string;
-}) {
-  const hold = useRef(0);
-  const pulse = useRef(0);
-  const repeated = useRef(false);
-  const fromPointer = useRef(false);
-
-  function clear() {
-    window.clearTimeout(hold.current);
-    window.clearInterval(pulse.current);
-    hold.current = 0;
-    pulse.current = 0;
-  }
-
-  function press(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    repeated.current = false;
-    if (!repeat) return;
-    hold.current = window.setTimeout(() => {
-      repeated.current = true;
-      onPress();
-      pulse.current = window.setInterval(() => onPress(), 55);
-    }, 380);
-  }
-
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      aria-pressed={pressed}
-      data-on={pressed ? "true" : "false"}
-      onPointerDown={press}
-      onPointerUp={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        const inside =
-          event.clientX >= rect.left &&
-          event.clientX <= rect.right &&
-          event.clientY >= rect.top &&
-          event.clientY <= rect.bottom;
-        clear();
-        if (inside && !repeated.current) {
-          fromPointer.current = true;
-          onPress();
-        }
-        repeated.current = false;
-      }}
-      onPointerCancel={() => {
-        clear();
-        repeated.current = false;
-      }}
-      onClick={() => {
-        if (fromPointer.current) {
-          fromPointer.current = false;
-          return;
-        }
-        onPress();
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** Keeps an element mounted while its exit animation plays. */
-function usePresence(open: boolean, ms = 220) {
-  const [mounted, setMounted] = useState(open);
-  if (open && !mounted) setMounted(true);
-  useEffect(() => {
-    if (open || !mounted) return;
-    const timer = window.setTimeout(() => setMounted(false), ms);
-    return () => window.clearTimeout(timer);
-  }, [open, mounted, ms]);
-  return { mounted, state: open ? "open" : "closed" } as const;
-}
-
-/** The last non-empty value, so content stays readable while it animates out. */
-function useLast<T>(value: T | null | "") {
-  const [last, setLast] = useState<T | null>(value || null);
-  if (value && value !== last) setLast(value);
-  return last;
-}

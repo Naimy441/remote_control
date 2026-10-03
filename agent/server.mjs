@@ -204,6 +204,37 @@ function loadTune() {
 
 let tune = loadTune();
 
+// The dock lists open apps most recently used first. macOS only reports who is in front right now, so the
+// agent remembers the order itself and keeps it across restarts.
+const recentPath = path.join(agentDir, "recent-apps.json");
+let recentApps = [];
+try {
+  const saved = JSON.parse(fs.readFileSync(recentPath, "utf8"));
+  if (Array.isArray(saved)) recentApps = saved.filter((id) => typeof id === "string").slice(0, 80);
+} catch {
+  // First run: start with no history.
+}
+
+function orderByRecent(apps, front) {
+  if (front && recentApps[0] !== front) {
+    recentApps = [front, ...recentApps.filter((id) => id !== front)].slice(0, 80);
+    try {
+      fs.writeFileSync(recentPath, JSON.stringify(recentApps));
+    } catch {
+      // The order still works for this session.
+    }
+  }
+  const rank = (id) => {
+    const at = recentApps.indexOf(id);
+    return at === -1 ? Number.MAX_SAFE_INTEGER : at;
+  };
+  // Apps with no history keep the helper's order (alphabetical), after the ones used recently.
+  return apps
+    .map((app, index) => ({ app, index }))
+    .sort((a, b) => rank(a.app.id) - rank(b.app.id) || a.index - b.index)
+    .map(({ app }) => app);
+}
+
 function saveTune(next) {
   tune = cleanTune(next);
   fs.writeFileSync(tunePath, `${JSON.stringify(tune, null, 2)}\n`);
@@ -499,7 +530,7 @@ async function refreshDesk() {
         latestDesk = {
           front: typeof snap.front === "string" ? snap.front : "",
           browser,
-          apps: Array.isArray(snap.apps) ? snap.apps : [],
+          apps: orderByRecent(Array.isArray(snap.apps) ? snap.apps : [], typeof snap.front === "string" ? snap.front : ""),
           tabs: tabs.map((tab) => ({
             key: `${browser}:${tab.index}`,
             index: tab.index,
